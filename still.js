@@ -131,8 +131,13 @@
     host.addEventListener('wheel', function (e) {
       e.preventDefault();
       var b = host.getBoundingClientRect();
-      self.zoomAt(e.deltaY < 0 ? 1.12 : 1 / 1.12, e.clientX - b.left, e.clientY - b.top);
+      self.zoomAt(R.wheelFactor(e, 1.12), e.clientX - b.left, e.clientY - b.top);
     }, { passive: false });
+    var z0 = 1;
+    R.safariPinch(host, function () { z0 = self.f.zoom; }, function (scale, e) {
+      var b = host.getBoundingClientRect();
+      self.zoomAt(z0 * scale / self.f.zoom, e.clientX - b.left, e.clientY - b.top);
+    });
     host.addEventListener('pointerdown', function (e) {
       ptrs.set(e.pointerId, e);
       host.setPointerCapture(e.pointerId);

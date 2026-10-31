@@ -33,7 +33,8 @@
     var c = view.coordinatesToScreen({ yaw: h.yaw, pitch: h.pitch });
     if (!c) return null;
     if (!isFlat(h)) {
-      return { center: c, flat: false, map: function (x, y) { return { x: c.x + x * k, y: c.y + y * k }; } };
+      var aa = window.R360.hasArrowAngle(h) ? (h.arrowAngle || 0) * DEG : 0, ca = Math.cos(aa), sa = Math.sin(aa);
+      return { center: c, flat: false, map: function (x, y) { return { x: c.x + (x * ca - y * sa) * k, y: c.y + (x * sa + y * ca) * k }; } };
     }
     var d = dirFrom(h.yaw, h.pitch);
     var R = [Math.cos(h.yaw), 0, -Math.sin(h.yaw)];
@@ -116,7 +117,7 @@
     ctx.lineWidth = lw(pr, stroke, k); ctx.strokeStyle = color; ctx.stroke();
     ctx.globalAlpha = 1;
   }
-  function drawChevrons(ctx, pr, width, n, k, anim, now) {
+  function drawChevrons(ctx, pr, width, n, k, anim, now, color) {
     var s = width / 24;                   // viewBox 24×12 del ícono
     var gap = 6.5 * s;                    // separación vertical entre flechas
     for (var i = 0; i < n; i++) {
@@ -128,23 +129,23 @@
       var pts = [[-9 * s, 3.5 * s + oy + dy], [0, -3.5 * s + oy + dy], [9 * s, 3.5 * s + oy + dy]];
       ctx.globalAlpha = alpha; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
       polyline(ctx, pr, pts); ctx.lineWidth = lw(pr, 4.6 * s, k); ctx.strokeStyle = 'rgba(0,0,0,0.35)'; ctx.stroke();
-      polyline(ctx, pr, pts); ctx.lineWidth = lw(pr, 2.6 * s, k); ctx.strokeStyle = '#fff'; ctx.stroke();
+      polyline(ctx, pr, pts); ctx.lineWidth = lw(pr, 2.6 * s, k); ctx.strokeStyle = color; ctx.stroke();
     }
     ctx.globalAlpha = 1;
   }
-  function drawDoor(ctx, pr, HS, k, anim, now) {
+  function drawDoor(ctx, pr, HS, k, anim, now, color) {
     var w = 0.34 * HS, h = 0.5 * HS, x0 = -w / 2, y0 = -h / 2, b = 2;
     // marco (sin línea inferior)
     ctx.lineCap = 'butt'; ctx.lineJoin = 'miter';
     polyline(ctx, pr, [[x0, -y0], [x0, y0], [-x0, y0], [-x0, -y0]]);
     ctx.lineWidth = lw(pr, b + 1.5, k); ctx.strokeStyle = 'rgba(0,0,0,0.2)'; ctx.stroke();
-    ctx.lineWidth = lw(pr, b, k); ctx.strokeStyle = '#fff'; ctx.stroke();
+    ctx.lineWidth = lw(pr, b, k); ctx.strokeStyle = color; ctx.stroke();
     // hoja: gira sobre la bisagra izquierda (perspectiva aproximada)
     var ang = (anim ? doorAngle(now) : -38) * DEG;
     var lx0 = x0 + b, ly0 = y0 + b, lw0 = w - 2 * b, lh = h - b;
     var xr = lx0 + lw0 * Math.cos(ang), shrink = 0.16 * Math.abs(Math.sin(ang)) * lh;
     var leaf = [[lx0, ly0], [xr, ly0 + shrink / 2], [xr, ly0 + lh - shrink / 2], [lx0, ly0 + lh]];
-    ctx.globalAlpha = 0.92; polyline(ctx, pr, leaf, true); ctx.fillStyle = '#fff'; ctx.fill(); ctx.globalAlpha = 1;
+    ctx.globalAlpha = 0.92; polyline(ctx, pr, leaf, true); ctx.fillStyle = color; ctx.fill(); ctx.globalAlpha = 1;
     // manija
     var kx = lx0 + (xr - lx0) * 0.78, ky = ly0 + lh * 0.52, kw = Math.max(1, Math.abs(xr - lx0) * 0.14);
     polyline(ctx, pr, [[kx - kw / 2, ky], [kx + kw / 2, ky]]); ctx.lineWidth = lw(pr, 1.6, k); ctx.strokeStyle = 'rgba(0,0,0,0.55)'; ctx.stroke();
@@ -231,20 +232,21 @@
       var bs = baseSize(hs), HS = bs.HS, r = HS / 2 - bs.stroke / 2;
       var anim = hs.animate !== false, style = hs.type === 'link' ? (hs.style || 'circulo') : 'info';
       var isHover = this.hover === hs.id, isSel = this.selected === hs.id;
-      var ringColor = isHover ? accent : '#fff';
+      var color = (hs.type === 'link' && hs.color) || '#fff';
+      var ringColor = isHover ? accent : color;
       if (anim) this._needsAnim = true;
 
       if (style !== 'flechas') {
-        if (anim) { var p = pulse(now); if (p) drawRing(ctx, pr, r * p.scale, bs.stroke, k, '#fff', p.alpha); }
+        if (anim) { var p = pulse(now); if (p) drawRing(ctx, pr, r * p.scale, bs.stroke, k, color, p.alpha); }
         drawRing(ctx, pr, r, bs.stroke, k, ringColor, 1);
       }
-      if (style === 'circulo' || style === 'suelo') drawChevrons(ctx, pr, 0.52 * HS, Math.max(1, Math.min(3, hs.arrows || 1)), k, anim, now);
-      else if (style === 'flechas') drawChevrons(ctx, pr, 0.74 * HS, Math.max(1, Math.min(3, hs.arrows || 1)), k, anim, now);
-      else if (style === 'puerta') drawDoor(ctx, pr, HS, k, anim, now);
+      if (style === 'circulo' || style === 'suelo') drawChevrons(ctx, pr, 0.52 * HS, Math.max(1, Math.min(3, hs.arrows || 1)), k, anim, now, color);
+      else if (style === 'flechas') drawChevrons(ctx, pr, 0.74 * HS, Math.max(1, Math.min(3, hs.arrows || 1)), k, anim, now, color);
+      else if (style === 'puerta') drawDoor(ctx, pr, HS, k, anim, now, color);
       else drawInfo(ctx, pr, HS, k);
 
       // Radio de clic en pantalla
-      var rim = [pr.map(r, 0), pr.map(-r, 0), pr.map(0, r), pr.map(0, -r)].filter(Boolean);
+      var rim = pr.flat ? [pr.map(r, 0), pr.map(-r, 0), pr.map(0, r), pr.map(0, -r)].filter(Boolean) : [];
       var rad = rim.length ? Math.max.apply(null, rim.map(function (q) { return Math.hypot(q.x - c.x, q.y - c.y); })) : r * k;
       rad = Math.max(rad, 18);
       var top = rim.length ? Math.min.apply(null, rim.map(function (q) { return q.y; })) : c.y - rad;

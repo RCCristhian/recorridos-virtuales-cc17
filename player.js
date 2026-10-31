@@ -24,6 +24,8 @@
 
   function byId(list, id) { for (var i = 0; i < (list || []).length; i++) if (list[i].id === id) return list[i]; return null; }
   function sceneData(id) { return byId(tour.scenes, id); }
+  // Nombre que se muestra abajo; vacío lo oculta (el diseño también puede ocultarlo en todo el recorrido).
+  function sceneLabel(s) { return s.hideName ? '' : s.name || ''; }
   function paragraphs(text) {
     return String(text || '').split(/\n{2,}/).map(function (p) { return '<p>' + esc(p).replace(/\n/g, '<br>') + '</p>'; }).join('');
   }
@@ -88,6 +90,28 @@
     });
   }
 
+  // Mientras dura un viaje no se atiende el zoom del usuario: la inercia del trackpad sigue enviando
+  // rueda un buen rato después de soltar los dedos y se notaría como un tirón al llegar.
+  var travelSeq = 0, wheelHoldUntil = 0, WHEEL_QUIET = 160;
+  function traveling() { return travelSeq !== 0 && travelSeq === navSeq; }
+  function holdWheel() { wheelHoldUntil = performance.now() + WHEEL_QUIET; }
+  function bindPanoGestures() {
+    var pano = $('pano');
+    pano.addEventListener('wheel', function (e) {
+      if (!traveling() && performance.now() > wheelHoldUntil) return;
+      holdWheel();                                      // sigue llegando inercia: se espera a que pare
+      e.preventDefault(); e.stopImmediatePropagation();
+    }, { capture: true, passive: false });
+    R.panoGestures(pano, function () {
+      if (traveling() || !viewer.scene() || !viewer.controls().enabled()) return null;
+      viewer.breakIdleMovement();
+      return viewer.view();
+    });
+    // Pellizcar sobre el menú o los botones no debe agrandar toda la página.
+    document.addEventListener('wheel', function (e) { if (e.ctrlKey) e.preventDefault(); }, { passive: false });
+    R.safariPinch(document, function () {}, function () {});
+  }
+
   // Viaje entre dos 360 por un salto: UN solo movimiento continuo, sin pausas.
   //  - el origen se acerca (arranca suave y nunca se detiene) en la dirección en la que se mira;
   //  - en cuanto el destino está cargado empieza el fundido, mientras el origen sigue avanzando;
@@ -95,6 +119,7 @@
   function easeOutCubic(u) { return 1 - Math.pow(1 - u, 3); }
   function travel(s, h, prev) {
     var seq = ++navSeq, my = ++loadSeq;
+    travelSeq = seq;
     var from = scenes[current], pv = from.view();
     var f0 = pv.fov(), y0 = pv.yaw(), p0 = pv.pitch();
     var dest = getScene(s.id), target = R.effectiveFov(tour, s);
@@ -106,11 +131,11 @@
     var fixed = h.keepView || s.arriveFixed;           // el panorama destino pide mirar siempre a su vista inicial
     var yawTo = fixed ? (s.initialView || R.DEFAULT_VIEW).yaw : y0;
     var pitchTo = fixed ? (s.initialView || R.DEFAULT_VIEW).pitch : p0 * 0.5;
-    // Zoom real en esta pantalla: el mismo límite que aplica Marzipano (110° en vertical y en horizontal).
-    var pano = $('pano'), aspect = Math.max(0.2, pano.clientWidth / Math.max(1, pano.clientHeight));
-    target = Math.min(target, 110 * Math.PI / 180, 2 * Math.atan(Math.tan(55 * Math.PI / 180) / aspect));
+    // Zoom real en esta pantalla: el que dejará el límite normal al terminar, para que el final no dé un salto.
+    var pano = $('pano');
+    target = normalLimiter({ yaw: yawTo, pitch: pitchTo, roll: 0, fov: target, width: pano.clientWidth, height: pano.clientHeight }).fov;
     dv.setParameters({ yaw: yawTo, pitch: pitchTo, fov: target });
-    dv.setLimiter(M.RectilinearView.limit.traditional(s.faceSize, 130 * Math.PI / 180, 170 * Math.PI / 180));
+    dv.setLimiter(R.panoLimiter(s.faceSize, 130 * Math.PI / 180, 170 * Math.PI / 180));
     start = { yaw: yawTo, pitch: pitchTo, fov: Math.min(target * 1.22, 2.1) };
     var FADE = Math.max(500, tour.settings.transition != null ? tour.settings.transition : 900);
     var ready = false, fadeAt = null, t0 = performance.now();
@@ -120,8 +145,8 @@
     var slow = setTimeout(function () { if (my === loadSeq && !ready) setBar(0.08); }, 150);
     preload(panoUrls(s), function (p) { if (my === loadSeq && fadeAt === null) setBar(p); }).then(function () { ready = true; clearTimeout(slow); });
     function frame(now) {
-      if (seq !== navSeq) return;                       // el usuario eligió otra cosa
-      var e = now - t0;
+      if (seq !== navSeq) { dv.setLimiter(normalLimiter); return; }   // el usuario eligió otra cosa
+      var e = Math.max(0, now - t0);                    // el primer cuadro puede traer una hora anterior a t0
       // Acercamiento del origen: arranca con suavidad y avanza siempre (se va frenando sin parar).
       var k = 1 - Math.exp(-Math.pow(e / 750, 1.5));
       pv.setFov(Math.max(0.25, f0 * (1 - 0.45 * k)));
@@ -134,7 +159,7 @@
       if (fadeAt !== null) {
         var u = Math.min(1, (now - fadeAt) / (FADE + 350));
         dest.view().setFov(start.fov + (target - start.fov) * easeOutCubic(u));
-        if (u >= 1) { dv.setFov(target); dv.setLimiter(normalLimiter); arrived(s, prev); return; }
+        if (u >= 1) { dv.setFov(target); dv.setLimiter(normalLimiter); travelSeq = 0; holdWheel(); arrived(s, prev); return; }
       }
       requestAnimationFrame(frame);
     }
@@ -196,7 +221,7 @@
     document.body.classList.toggle('is-still', s.kind === 'image');
     document.body.classList.remove('is-cover');
     current = s.id;
-    $('sceneTitle').textContent = s.name || '';
+    $('sceneTitle').textContent = sceneLabel(s);
     try { history.replaceState(null, '', '#' + encodeURIComponent(s.id)); } catch (e) { /* file:// */ }
     renderMenu();
     if (isMobile()) setPanel(false);
@@ -209,7 +234,7 @@
     if (autoOn && autorotate) viewer.setIdleMovement((tour.settings.idleSeconds || 6) * 1000, autorotate);
     document.body.classList.remove('is-still', 'is-cover');
     current = s.id;
-    $('sceneTitle').textContent = s.name || '';
+    $('sceneTitle').textContent = sceneLabel(s);
     try { history.replaceState(null, '', '#' + encodeURIComponent(s.id)); } catch (e) { /* file:// */ }
     renderMenu();
   }
@@ -574,7 +599,7 @@
     }
     var s = keep && sceneData(keep);
     if (!s) { goHome(); return; }
-    $('sceneTitle').textContent = s.name || '';
+    $('sceneTitle').textContent = sceneLabel(s);
     if (s.kind === 'image') { if (stills[stillIdx]) stills[stillIdx].load(base + s.image, s.framing, s.name); }
     else if (scenes[keep]) layer.setScene(scenes[keep], s.hotspots || []);
   });
@@ -597,6 +622,7 @@
     // Pantalla de precarga con la identidad del proyecto
     $('loaderBrand').innerHTML = brandHtml;
 
+    bindPanoGestures();   // antes que el visor: tiene que ver la rueda primero
     viewer = new M.Viewer($('pano'), { controls: { mouseViewMode: 'drag' } });
     makeLayer();
     if (qs.has('debug')) window.__r360 = { viewer: viewer, layer: function () { return layer; }, current: function () { return current; } };   // solo para pruebas

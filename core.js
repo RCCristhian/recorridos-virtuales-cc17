@@ -10,6 +10,59 @@
     });
   }
 
+  // Límites del zoom. El límite de Marzipano multiplica la altura por la densidad de la pantalla:
+  // en una Retina (Mac) el mínimo de campo de visión quedaba por encima del máximo, así que el zoom
+  // no respondía y el viaje entre panoramas terminaba con un salto brusco. Aquí se cuenta en
+  // píxeles de pantalla normales, igual en todos los equipos, y siempre queda margen para acercarse.
+  var MIN_ZOOM_FOV = 60 * Math.PI / 180;
+  function panoLimiter(faceSize, maxVFov, maxHFov) {
+    var L = M.RectilinearView.limit;
+    var range = M.util.compose(L.vfov(0, maxVFov), L.hfov(0, maxHFov != null ? maxHFov : maxVFov), L.pitch(-Math.PI / 2, Math.PI / 2));
+    return function (p) {
+      if (p.height) p.fov = Math.max(p.fov, Math.min(2 * Math.atan(p.height / faceSize), MIN_ZOOM_FOV));
+      return range(p);
+    };
+  }
+
+  // ---------- Gestos de zoom ----------
+  function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+  // Chrome, Firefox y Edge envían el pellizco del trackpad como rueda con Ctrl.
+  var PINCH_RATE = 0.01, PINCH_MAX = 25;
+  function wheelPx(e) { return e.deltaY * (e.deltaMode === 1 ? 33 : e.deltaMode === 2 ? 100 : 1); }
+  function pinchFactor(e) { return Math.exp(-clamp(wheelPx(e), -PINCH_MAX, PINCH_MAX) * PINCH_RATE); }
+  // Factor para imágenes (>1 acerca): notch por muesca de la rueda y proporcional en el trackpad.
+  function wheelFactor(e, notch) {
+    return e.ctrlKey ? pinchFactor(e) : Math.pow(notch, -clamp(wheelPx(e), -100, 100) / 100);
+  }
+  // Safari en Mac envía el pellizco como gesture*. En iPhone y iPad el gesto con los dedos ya lo
+  // atiende cada visor por su cuenta: aquí solo se atiende si no hay dedos en la pantalla.
+  function safariPinch(el, onStart, onScale) {
+    var touches = 0;
+    function count(e) { touches = e.touches.length; }
+    ['touchstart', 'touchend', 'touchcancel'].forEach(function (ev) { el.addEventListener(ev, count, { capture: true, passive: true }); });
+    el.addEventListener('gesturestart', function (e) { if (touches) return; e.preventDefault(); onStart(e); });
+    el.addEventListener('gesturechange', function (e) { if (touches) return; e.preventDefault(); onScale(e.scale, e); });
+    el.addEventListener('gestureend', function (e) { if (!touches) e.preventDefault(); });
+  }
+  // Pellizco sobre el panorama. getView() devuelve la vista, o null si ahora no se puede hacer zoom.
+  // La rueda sin Ctrl (mouse, Magic Mouse, dos dedos) sigue a cargo de Marzipano.
+  function panoGestures(el, getView) {
+    var f0 = null;
+    el.addEventListener('wheel', function (e) {
+      if (!e.ctrlKey) return;
+      e.preventDefault(); e.stopPropagation();
+      var v = getView();
+      if (v) v.setFov(v.fov() / pinchFactor(e));
+    }, { capture: true, passive: false });
+    safariPinch(el, function () {
+      var v = getView();
+      f0 = v ? v.fov() : null;
+    }, function (scale) {
+      var v = getView();
+      if (v && f0 != null) v.setFov(2 * Math.atan(Math.tan(f0 / 2) / scale));
+    });
+  }
+
   function createScene(viewer, base, s, opts) {
     var v = s.initialView || DEFAULT_VIEW;
     var source = M.ImageUrlSource.fromString(
@@ -17,7 +70,7 @@
       { cubeMapPreviewUrl: base + 'tiles/' + s.id + '/preview.jpg' }
     );
     var geometry = new M.CubeGeometry(s.levels);
-    var limiter = M.RectilinearView.limit.traditional(s.faceSize, 110 * Math.PI / 180);
+    var limiter = panoLimiter(s.faceSize, 110 * Math.PI / 180);
     var view = new M.RectilinearView({ yaw: v.yaw, pitch: v.pitch, fov: v.fov }, limiter);
     return viewer.createScene({ source: source, geometry: geometry, view: view, pinFirstLevel: true });
   }
@@ -39,6 +92,12 @@
     { id: 'flechas', name: 'Solo flechas', arrows: true },
     { id: 'puerta', name: 'Puerta', arrows: false },
   ];
+  // Cómo salen los saltos nuevos si el usuario no eligió otra cosa.
+  var LINK_DEFAULTS = { style: 'suelo', arrows: 1, size: 1, color: null, animate: true };
+  // ¿El salto lleva una flecha que se puede girar libremente? (no va pegado a una superficie)
+  function hasArrowAngle(h) {
+    return h.type === 'link' && !isFlat(h) && (!h.style || h.style === 'circulo' || h.style === 'flechas');
+  }
 
   function chevrons(n) {
     n = Math.max(1, Math.min(3, n || 1));
@@ -63,6 +122,7 @@
     el.innerHTML = '<span class="r360-body">' +
       (type === 'link' ? linkInner(style, opts.arrows) : PULSE + '<span class="r360-ring"></span><span class="r360-icon">' + INFO + '</span>') + '</span>' +
       (label ? '<span class="r360-tip">' + esc(label) + '</span>' : '');
+    if (opts.color) el.style.color = opts.color;
     el.setAttribute('role', 'button');
     el.setAttribute('tabindex', '0');
     if (label) el.setAttribute('aria-label', label);
@@ -127,8 +187,10 @@
     }
     viewport.addEventListener('wheel', function (e) {
       e.preventDefault();
-      zoomAt(e.deltaY < 0 ? 1.15 : 1 / 1.15, e.clientX, e.clientY);
+      zoomAt(wheelFactor(e, 1.15), e.clientX, e.clientY);
     }, { passive: false });
+    var s0 = 1;
+    safariPinch(viewport, function () { s0 = s; }, function (scale, e) { zoomAt(s0 * scale / s, e.clientX, e.clientY); });
     viewport.addEventListener('pointerdown', function (e) {
       pointers.set(e.pointerId, e);
       if (pointers.size === 1) drag = { sx: e.clientX, sy: e.clientY, x: x, y: y, moved: false };
@@ -229,6 +291,6 @@
   window.R360 = {
     FONTS: FONTS, DEFAULT_THEME: DEFAULT_THEME, theme: theme, rgba: rgba, fontStack: fontStack, loadFont: loadFont,
     esc: esc, createScene: createScene, hotspotEl: hotspotEl, addHotspot: addHotspot, isFlat: isFlat, autoTilt: autoTilt,
-    LINK_STYLES: LINK_STYLES, stopPanoEvents: stopPanoEvents, zoomPan: zoomPan, DEFAULT_VIEW: DEFAULT_VIEW,
+    LINK_STYLES: LINK_STYLES, LINK_DEFAULTS: LINK_DEFAULTS, hasArrowAngle: hasArrowAngle, panoLimiter: panoLimiter, panoGestures: panoGestures, safariPinch: safariPinch, wheelFactor: wheelFactor, stopPanoEvents: stopPanoEvents, zoomPan: zoomPan, DEFAULT_VIEW: DEFAULT_VIEW,
   };
 })();
