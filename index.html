@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1c1d1a">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>INDEPENDENCIA Y TERUEL</title>
+<link rel="stylesheet" href="core.css">
+<link rel="stylesheet" href="player.css">
+</head>
+<body>
+<div id="pano" aria-label="Panorama 360"></div>
+<div id="still" class="layer-fade"></div>
+<div id="still2" class="layer-fade"></div>
+<div id="cover" class="layer-fade" aria-label="Portada"></div>
+
+<aside id="panel" aria-label="Menú del recorrido">
+  <div class="panel-logo" id="logo" role="button" tabindex="0" title="Inicio"></div>
+  <nav id="menu"></nav>
+  <div class="panel-foot" id="tools"></div>
+</aside>
+<button id="panelToggle" class="round" aria-label="Ocultar menú" aria-expanded="true">
+  <svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+</button>
+
+<div id="topRight">
+  <button id="btnAuto" class="round" aria-label="Giro automático" aria-pressed="true">
+    <svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.7M20 4v5h-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  </button>
+  <button id="btnFull" class="round" aria-label="Pantalla completa">
+    <svg viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  </button>
+</div>
+
+<div id="sceneTitle" aria-live="polite"></div>
+<a id="madeby" href="https://ray-b.com" target="_blank" rel="noopener">Hecho con Ray-B View · RAY<span class="dash"></span>B</a>
+<div id="loadbar" aria-hidden="true"><span></span></div>
+<button id="fsHint" hidden>Salir de pantalla completa (Esc)</button>
+
+<div id="modal" hidden>
+  <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+    <header><h2 id="modalTitle"></h2>
+      <button class="modal-btn" id="modalMax" aria-label="Maximizar" hidden></button>
+      <button class="modal-btn modal-close" aria-label="Cerrar">
+      <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg></button></header>
+    <div class="modal-body" id="modalBody"></div>
+  </div>
+</div>
+
+<div id="loader">
+  <div class="loader-brand" id="loaderBrand"></div>
+  <div class="loader-track"><span id="loaderBar"></span></div>
+  <p>Cargando recorrido…</p>
+</div>
+
+<script src="marzipano.js"></script>
+<script src="core.js"></script>
+<script src="hotspots.js"></script>
+<script src="still.js"></script>
+<script src="player.js"></script>
+</body>
+</html>
