@@ -714,7 +714,22 @@
   if (!(document.fullscreenEnabled || document.webkitFullscreenEnabled)) $('btnFull').hidden = true;
 
   // ---------- Diseño ----------
+  // Favicon elegido en el editor (en la vista previa; el exportado ya lo trae en su HTML).
+  function applyFavicon() {
+    var f = tour.favicon && tour.favicon.files;
+    document.querySelectorAll('link[data-r360-icon]').forEach(function (l) { l.remove(); });
+    if (!f) return;
+    [['icon', 32], ['icon', 16], ['apple-touch-icon', 180]].forEach(function (x) {
+      if (!f[x[1]]) return;
+      var l = document.createElement('link');
+      l.rel = x[0]; l.setAttribute('sizes', x[1] + 'x' + x[1]); if (x[0] === 'icon') l.type = 'image/png';
+      l.href = base + f[x[1]] + '?v=' + (tour.favicon.v || 1);
+      l.setAttribute('data-r360-icon', '');
+      document.head.appendChild(l);
+    });
+  }
   function applyTheme() {
+    applyFavicon();
     var t = R.theme(tour), st = document.documentElement.style;
     R.loadFont(t.font);
     st.setProperty('--font', R.fontStack(t.font));
