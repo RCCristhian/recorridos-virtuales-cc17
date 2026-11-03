@@ -43,37 +43,112 @@
     b.firstElementChild.style.width = '100%';
     barTimer = setTimeout(function () { b.classList.remove('on'); setTimeout(function () { b.firstElementChild.style.width = '0'; }, 300); }, 220);
   }
-  // Descarga las imágenes indicadas antes de mostrar la escena. onProgress(0–1).
+  // Descarga imágenes a la caché del navegador, de 6 en 6 y en el orden dado. onProgress(0–1).
+  // Se piden igual que las pide Marzipano (crossOrigin), así luego las encuentra en la caché.
   function preload(urls, onProgress) {
     return new Promise(function (resolve) {
-      var done = 0, n = urls.length;
+      var i = 0, done = 0, n = urls.length;
       if (!n) return resolve();
-      urls.forEach(function (u) {
+      function next() {
+        if (i >= n) return;
         var im = new Image();
+        im.crossOrigin = 'anonymous';
         im.onload = im.onerror = function () {
           done++;
           if (onProgress) onProgress(done / n);
-          if (done === n) resolve();
+          if (done === n) resolve(); else next();
         };
-        im.src = u;
-      });
+        im.src = urls[i++];
+      }
+      for (var k = 0; k < 6; k++) next();
     });
   }
-  // Lo necesario para que el panorama se vea nítido al aparecer: vista previa + primer nivel.
-  function panoUrls(s) {
-    var urls = [base + 'tiles/' + s.id + '/preview.jpg'], lv = s.levels && s.levels[1];
-    if (lv) {
-      var n = Math.round(lv.size / lv.tileSize);
-      ['b', 'd', 'f', 'l', 'r', 'u'].forEach(function (f) {
-        for (var y = 0; y < n; y++) for (var x = 0; x < n; x++) urls.push(base + 'tiles/' + s.id + '/1/' + f + '/' + y + '/' + x + '.jpg');
-      });
-    }
+  function levelUrls(s, z) {
+    var lv = s.levels && s.levels[z], urls = [];
+    if (!lv || lv.fallbackOnly) return urls;
+    var n = Math.round(lv.size / lv.tileSize);
+    ['b', 'd', 'f', 'l', 'r', 'u'].forEach(function (f) {
+      for (var y = 0; y < n; y++) for (var x = 0; x < n; x++) urls.push(base + 'tiles/' + s.id + '/' + z + '/' + f + '/' + y + '/' + x + '.jpg');
+    });
     return urls;
   }
+  // Lo que necesita un panorama para verse completo en esta pantalla: vista previa + su nivel.
+  function panoUrls(s) { return [base + 'tiles/' + s.id + '/preview.jpg'].concat(levelUrls(s, displayLevel(s))); }
+
+  // ---------- Nivel de detalle por pantalla ----------
+  // Marzipano pide los cuadros nítidos según hacia dónde se mira y los dibuja según llegan: al girar,
+  // lo nuevo aparecía borroso y se afinaba por cuadros. Ahora cada escena se muestra con UN nivel
+  // completo, el adecuado a esta pantalla, preparado entero antes de verla. Solo al acercarse mucho
+  // se piden cuadros más nítidos, y entonces el nivel completo queda debajo: nunca hay huecos.
+  var PHONE_FACE = 1000;                    // en celular: más nítido casi no se nota y gasta mucha memoria
+  var levelIdx = {};
+  function baseFov(s) {
+    var p = $('pano'), lim = R.panoLimiter(s.faceSize, 110 * Math.PI / 180);
+    return lim({ yaw: 0, pitch: 0, roll: 0, fov: R.effectiveFov(tour, s), width: p.clientWidth, height: p.clientHeight }).fov;
+  }
+  function displayLevel(s) {
+    if (levelIdx[s.id] != null) return levelIdx[s.id];
+    // Misma regla que Marzipano: el primer nivel con detalle suficiente para la altura de la pantalla.
+    var need = (window.devicePixelRatio || 1) * Math.max(1, $('pano').clientHeight), t = Math.tan(baseFov(s) / 2);
+    var pick = null, cap = null, last = null;
+    s.levels.forEach(function (lv, i) {
+      if (lv.fallbackOnly) return;
+      last = i;
+      if (pick === null && lv.size * t >= need) pick = i;
+      if (lv.size <= PHONE_FACE) cap = i;
+    });
+    if (pick === null) pick = last;
+    if (PHONE && cap !== null) pick = Math.min(pick, cap);
+    return (levelIdx[s.id] = pick);
+  }
+  function levelBytes(s) { var lv = s.levels[displayLevel(s)], n = lv.size / lv.tileSize; return 6 * n * n * lv.tileSize * lv.tileSize * 4; }
+  // Al acercarse mucho se deja pedir más detalle; si no, la escena usa siempre su nivel completo.
+  function applyLevel(sc, s) {
+    if (traveling()) return;
+    var v = sc.view(), l = sc.layer(), geo = l.geometry(), idx = displayLevel(s);
+    var want = geo.levelList.indexOf(v.selectLevel(geo.selectableLevelList));
+    l.setFixedLevel(want > idx && v.fov() < baseFov(s) * 0.85 ? null : idx);
+  }
+  function levelReady(id) {
+    var sc = scenes[id];
+    if (!sc) return false;
+    var l = sc.layer(), geo = l.geometry(), st = l.textureStore();
+    var tiles = geo.levelTiles(geo.levelList[displayLevel(sceneData(id))]);
+    for (var i = 0; i < tiles.length; i++) if (!st.texture(tiles[i])) return false;
+    return true;
+  }
+  // Escenas con su nivel completo ya preparado en la memoria de imagen, la de mayor prioridad primero.
+  // La memoria del celular es limitada: se guardan las que caben (la actual y sus vecinas).
+  var GPU_BUDGET = PHONE ? 110e6 : 400e6;
+  var resident = [];
+  function keepResident(ids) {
+    ids = ids.filter(function (id, i) { var s = sceneData(id); return s && s.kind !== 'image' && ids.indexOf(id) === i; });
+    ids.forEach(function (id) { if (resident.indexOf(id) < 0) getScene(id).layer().pinLevel(displayLevel(sceneData(id))); });
+    var order = ids.concat(resident.filter(function (id) { return ids.indexOf(id) < 0; })), used = 0;
+    resident = order.filter(function (id, i) {
+      var b = levelBytes(sceneData(id));
+      if (i === 0 || used + b <= GPU_BUDGET) { used += b; return true; }
+      var l = scenes[id].layer();
+      l.unpinLevel(displayLevel(sceneData(id)));
+      if (viewer.stage().listLayers().indexOf(l) < 0) l.textureStore().clearNotPinned();
+      return false;
+    });
+  }
+  // Escenas a las que se puede saltar desde esta: se preparan de antemano para que el salto no espere.
+  function neighbors(s) {
+    return (s.hotspots || []).filter(function (h) { return h.type === 'link'; }).map(function (h) { return h.target; });
+  }
+  function settle(s) { keepResident([s.id].concat(neighbors(s))); }
 
   // ---------- Panoramas ----------
   function getScene(id) {
-    if (!scenes[id]) scenes[id] = R.createScene(viewer, base, sceneData(id), { textureStoreOpts: { previouslyVisibleCacheSize: TILE_CACHE } });
+    if (!scenes[id]) {
+      var s = sceneData(id), sc = R.createScene(viewer, base, s, { textureStoreOpts: { previouslyVisibleCacheSize: TILE_CACHE } });
+      sc.__id = id;
+      sc.layer().setFixedLevel(displayLevel(s));
+      sc.view().addEventListener('change', function () { applyLevel(sc, s); });
+      scenes[id] = sc;
+    }
     return scenes[id];
   }
 
@@ -117,14 +192,15 @@
   }
   // Fundido que espera (como mucho HOLD_MAX) a que la escena nueva tenga sus imágenes listas:
   // mientras tanto queda invisible y se sigue viendo la anterior, así no se ven cuadros a medio cargar.
-  var HOLD_MAX = 1500;
-  function onStable(sc, max, cb) {
-    var l = sc.layer(), done = false, timer = null;
-    function finish() { if (done) return; done = true; clearTimeout(timer); l.removeEventListener('renderComplete', check); cb(); }
-    function check(stable) { if (stable) finish(); }
-    l.addEventListener('renderComplete', check);
-    timer = setTimeout(finish, max);
-    return finish;
+  var HOLD_MAX = 2500;
+  // Llama a cb cuando la escena tiene su nivel completo preparado (para que al girar no falte nada).
+  function onReady(sc, max, cb) {
+    var done = false, t0 = performance.now();
+    (function check() {
+      if (done) return;
+      if (levelReady(sc.__id) || performance.now() - t0 >= max) { done = true; cb(); return; }
+      setTimeout(check, 30);
+    })();
   }
   function switchWhenReady(sc, fade, onFade) {
     finishTransition();
@@ -140,7 +216,7 @@
         if (op >= 1) setTimeout(function () { if (switching === mine && viewer.scene() === sc) finishTransition(); }, 0);
       },
     });
-    onStable(sc, HOLD_MAX, function () {
+    onReady(sc, HOLD_MAX, function () {
       if (switching !== mine || viewer.scene() !== sc) return;
       readyAt = performance.now();
       if (onFade) onFade(readyAt);
@@ -192,10 +268,10 @@
     var seq = ++navSeq, my = ++loadSeq;
     travelSeq = seq;
     var from = scenes[current], pv = from.view();
-    // El origen se acerca con el detalle que ya tiene cargado: pedir cuadros más nítidos a mitad
-    // del salto hacía que se vieran aparecer mientras se avanzaba.
-    var fromLayer = from.layer(), fg = fromLayer.geometry();
-    fromLayer.setFixedLevel(fg.levelList.indexOf(pv.selectLevel(fg.selectableLevelList)));
+    // Mientras dura el salto cada escena conserva su nivel completo: el origen se acerca con lo que
+    // ya tiene y el destino se prepara entero (si era vecina, ya lo está y no hay espera).
+    var fromLayer = from.layer();
+    keepResident([s.id, prev.id]);
     var f0 = pv.fov(), y0 = pv.yaw(), p0 = pv.pitch();
     var dest = getScene(s.id), target = R.effectiveFov(tour, s);
     var start;
@@ -220,25 +296,21 @@
     var slow = setTimeout(function () { if (my === loadSeq && !ready) setBar(0.08); }, 150);
     preload(panoUrls(s), function (p) { if (my === loadSeq && fadeAt === null) setBar(p); }).then(function () { ready = true; clearTimeout(slow); });
     function frame(now) {
-      if (seq !== navSeq) { dv.setLimiter(normalLimiter); dest.layer().setFixedLevel(null); fromLayer.setFixedLevel(null); return; }   // el usuario eligió otra cosa
+      if (seq !== navSeq) { dv.setLimiter(normalLimiter); return; }   // el usuario eligió otra cosa
       var e = Math.max(0, now - t0);                    // el primer cuadro puede traer una hora anterior a t0
       // Acercamiento del origen: arranca con suavidad y avanza siempre (se va frenando sin parar).
       var k = 1 - Math.exp(-Math.pow(e / 750, 1.5));
       pv.setFov(Math.max(0.25, f0 * (1 - 0.45 * k)));
       if (ready && !switched && e >= 220) {
         switched = true;
-        // Se preparan ya los cuadros del detalle que se verá al final del acercamiento:
-        // si no, al cerrarse la vista aparecían cuadros nuevos justo al llegar.
-        var geo = dest.layer().geometry();
-        dv.setSize({ width: pano.clientWidth, height: pano.clientHeight });
-        dest.layer().setFixedLevel(geo.levelList.indexOf(dv.selectLevel(geo.selectableLevelList)));
+        dest.layer().setFixedLevel(displayLevel(s));
         dest.view().setParameters(start);
         switchWhenReady(dest, FADE, function (at) { if (seq === navSeq) { fadeAt = at; endBar(); } });
       }
       if (fadeAt !== null) {
         var u = Math.min(1, (now - fadeAt) / (FADE + 350));
         dest.view().setFov(start.fov + (target - start.fov) * easeOutCubic(u));
-        if (u >= 1) { dv.setFov(target); dv.setLimiter(normalLimiter); dest.layer().setFixedLevel(null); fromLayer.setFixedLevel(null); travelSeq = 0; holdWheel(); arrived(s, prev); return; }
+        if (u >= 1) { dv.setFov(target); dv.setLimiter(normalLimiter); travelSeq = 0; applyLevel(dest, s); applyLevel(from, prev); holdWheel(); arrived(s, prev); return; }
       }
       requestAnimationFrame(frame);
     }
@@ -291,6 +363,7 @@
       var sc = getScene(s.id), v = s.initialView || R.DEFAULT_VIEW;
       sc.view().setParameters({ yaw: v.yaw, pitch: v.pitch, fov: R.effectiveFov(tour, s) });
       var fade = (prev && prev.kind !== 'image' && current !== COVER) || (current === COVER && !!coverPano());
+      settle(s);
       if (fade) switchWhenReady(sc, tour.settings.transition != null ? tour.settings.transition : 900);
       else { finishTransition(); sc.switchTo({ transitionDuration: 0 }); }
       firstShown(sc);
@@ -309,6 +382,7 @@
   }
 
   function arrived(s, prev) {
+    settle(s);
     viewer.controls().enable();
     layer.setScene(scenes[s.id], s.hotspots || []);
     hideStills(); showLayer('cover', false);
@@ -327,7 +401,7 @@
     if (loaderGone) return;
     loaderGone = true;
     function hide() { setTimeout(function () { $('loader').classList.add('done'); }, 150); }
-    if (sc) onStable(sc, 6000, hide); else hide();
+    if (sc) onReady(sc, 8000, hide); else hide();
   }
 
   // ---------- Portada ----------
@@ -340,6 +414,7 @@
       if (seq !== navSeq) return;
       endBar();
       var sc = getScene(s.id), v = c.view || s.initialView || R.DEFAULT_VIEW;
+      settle(s);
       sc.view().setParameters({ yaw: v.yaw, pitch: v.pitch, fov: v.fov != null ? v.fov : R.effectiveFov(tour, s) });
       if (current && current !== COVER) switchWhenReady(sc, 700);
       else { finishTransition(); sc.switchTo({ transitionDuration: 0 }); }
@@ -463,6 +538,8 @@
     if (n.mode === 'tab') { window.open(url, '_blank', 'noopener'); return; }
     openModal(n.name, '<iframe class="modal-web" src="' + esc(url) + '" title="' + esc(n.name) + '" referrerpolicy="no-referrer-when-downgrade" allow="fullscreen; geolocation"></iframe>' +
       '<p class="modal-web-note">¿No se ve la página? Algunas webs no permiten mostrarse dentro de otra. <a href="' + esc(url) + '" target="_blank" rel="noopener">Ábrela en una pestaña nueva</a>.</p>', null, { maximizable: true, slim: true });
+    // En el ordenador se abre ya maximizada (en el celular la ventana ya ocupa toda la pantalla).
+    if (!isMobile()) { $('modal').classList.add('max'); setMaxIcon(); }
   }
 
   function setPanel(openIt) {
@@ -712,8 +789,9 @@
     if (!tour.scenes || !tour.scenes.length) return fail('Este recorrido todavía no tiene escenas.');
     document.title = tour.title || 'Recorrido virtual';
     var brandHtml = applyTheme();
-    // Pantalla de precarga con la identidad del proyecto
-    $('loaderBrand').innerHTML = brandHtml;
+    // Pantalla de precarga: logo del proyecto o de Ray-B (se elige al exportar)
+    $('loaderBrand').innerHTML = tour.settings.loaderBrand === 'rayb'
+      ? '<div class="loader-rayb">RAY<span class="dash"></span>B<small>View</small></div>' : brandHtml;
 
     bindPanoGestures();   // antes que el visor: tiene que ver la rueda primero
     viewer = new M.Viewer($('pano'), { controls: { mouseViewMode: 'drag' } });
@@ -731,7 +809,25 @@
     var urls = withCover ? (cp ? panoUrls(cp) : [base + tour.cover.image]) : (first || sceneData(startId())).kind === 'image'
       ? [base + (first || sceneData(startId())).image] : panoUrls(first || sceneData(startId()));
     if (tour.logo) urls.push(base + tour.logo);
-    preload(urls, function (p) { $('loaderBar').style.width = Math.round(p * 100) + '%'; }).then(function () {
+    // Todos los 360 a la caché antes de entrar, cada uno con su nivel para esta pantalla. Las imágenes
+    // fijas, que pesan mucho más, bajan después en segundo plano. Si tarda demasiado se entra igual.
+    tour.scenes.forEach(function (s) { if (s.kind !== 'image') urls = urls.concat(panoUrls(s)); });
+    urls = urls.filter(function (u, i) { return urls.indexOf(u) === i; });
+    var LOADER_MAX = 25000, entered = false, all = preload(urls, function (p) {
+      $('loaderBar').style.width = Math.round(p * 100) + '%';
+      $('loaderText').textContent = 'Cargando recorrido… ' + Math.round(p * 100) + ' %';
+    });
+    // En segundo plano, después: las imágenes fijas y, en ordenador, más detalle para cuando el
+    // cliente se acerque.
+    all.then(function () {
+      var more = [];
+      tour.scenes.forEach(function (s) { if (s.kind === 'image') more.push(base + s.image); });
+      if (!PHONE) tour.scenes.forEach(function (s) { if (s.kind !== 'image') for (var z = displayLevel(s) + 1; z < s.levels.length; z++) more = more.concat(levelUrls(s, z)); });
+      preload(more);
+    });
+    Promise.race([all, new Promise(function (r) { setTimeout(r, LOADER_MAX); })]).then(function () {
+      if (entered) return;
+      entered = true;
       autoOn = tour.settings.autorotate !== false;
       $('btnAuto').setAttribute('aria-pressed', String(autoOn));
       if (withCover) showCover(); else goTo(first ? first.id : startId());
