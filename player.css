@@ -58,7 +58,7 @@ body.panel-closed #panel { transform: translateX(-100%); }
 .panel-logo img { max-width: 100%; max-height: 90px; display: block; }
 .panel-logo img + h1 { margin-top: 14px; }
 .panel-logo h1 { margin: 0; font-size: 26px; font-weight: 700; letter-spacing: 0.01em; color: var(--accent); line-height: 1.1; overflow-wrap: anywhere; }
-#menu { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; justify-content: safe center; margin: 0 -6px; padding: 0 6px; -webkit-overflow-scrolling: touch; }
+#menu { position: relative; z-index: 1; flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; justify-content: safe center; margin: 0 -6px; padding: 0 6px; -webkit-overflow-scrolling: touch; }
 #menu ul { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--line); }
 #menu li { border-bottom: 1px solid var(--line); }
 #menu button {
@@ -225,6 +225,12 @@ body.panel-right:not(.panel-closed) #madeby { right: auto; left: calc(12px + env
   .panel-logo h1 { font-size: 22px !important; }
   #menu { justify-content: flex-start; }
   #menu button { min-height: 48px; }
+  /* En el celular el menú empieza justo bajo el logo: los ajustes verticales del logo y de
+     Volver (pensados para el menú centrado del ordenador) lo metían debajo del logo. Aquí solo
+     se acepta bajarlos, y se hace ocupando su espacio para que nada se monte. */
+  .panel-logo { transform: translateX(var(--logo-x)); margin-top: max(0px, var(--logo-y)); }
+  #menu .back { transform: translateX(var(--back-x, 0px)); }
+  #menu .back-top { margin-top: max(0px, var(--back-y, 0px)); margin-bottom: 14px; }
   #sceneTitle, body:not(.panel-closed) #sceneTitle, body.panel-right:not(.panel-closed) #sceneTitle { left: 50%; max-width: calc(100vw - 150px); bottom: calc(18px + var(--sab)); font-size: 12px; }
   /* Con el menú abierto en el celular, lo de atrás se oscurece y no estorba */
   body:not(.panel-closed) #sceneTitle, body:not(.panel-closed) #madeby { opacity: 0; }
@@ -253,6 +259,9 @@ body.panel-right:not(.panel-closed) #madeby { right: auto; left: calc(12px + env
   .panel-logo h1 { font-size: 18px !important; }
   #menu { justify-content: flex-start; }
   #menu button { min-height: 40px; padding: 6px 8px; }
+  .panel-logo { transform: translateX(var(--logo-x)); margin-top: max(0px, var(--logo-y)); }
+  #menu .back { transform: translateX(var(--back-x, 0px)); }
+  #menu .back-top { margin-top: max(0px, var(--back-y, 0px)); margin-bottom: 14px; }
   .panel-foot { padding-top: 12px; gap: 8px; }
   .tool { width: 40px; height: 40px; }
   #topRight { top: calc(10px + var(--sat)); gap: 8px; }

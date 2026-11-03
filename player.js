@@ -73,9 +73,80 @@
 
   // ---------- Panoramas ----------
   function getScene(id) {
-    if (!scenes[id]) scenes[id] = R.createScene(viewer, base, sceneData(id));
+    if (!scenes[id]) scenes[id] = R.createScene(viewer, base, sceneData(id), { textureStoreOpts: { previouslyVisibleCacheSize: TILE_CACHE } });
     return scenes[id];
   }
+
+  // ---------- Imágenes ya preparadas (memoria de la tarjeta gráfica) ----------
+  // Marzipano borra todas las imágenes de una escena al dejarla, así que al volver se preparaban
+  // otra vez cuadro por cuadro (muy visible en iPhone). Se conservan las de las últimas escenas
+  // visitadas; en celulares menos, porque su memoria es limitada.
+  var PHONE = window.matchMedia('(pointer: coarse)').matches;
+  // En celular: la escena actual y la anterior (lo justo para ir y volver), cada una entera.
+  // Si se pasa de ahí, el fundido igual espera a que la escena esté lista: no se ven cuadros.
+  var KEEP_SCENES = PHONE ? 1 : 4;         // escenas que dejaste y se conservan
+  var TILE_CACHE = PHONE ? 128 : 256;      // cuadros fuera de la vista que guarda cada escena
+  var keptLayers = [];
+  function keepTextures() {
+    if (typeof viewer._removeLayerFromStage !== 'function' || typeof viewer._addLayerToStage !== 'function') return;
+    var stage = viewer.stage(), add = viewer._addLayerToStage;
+    viewer._addLayerToStage = function (l, i) {
+      keptLayers = keptLayers.filter(function (k) { return k !== l; });
+      return add.call(viewer, l, i);
+    };
+    viewer._removeLayerFromStage = function (l) {
+      stage.removeLayer(l);
+      l.unpinFirstLevel();
+      keptLayers.unshift(l);
+      while (keptLayers.length > KEEP_SCENES) keptLayers.pop().textureStore().clearNotPinned();
+    };
+  }
+  // Termina ya el fundido en curso: quita la escena anterior. Sin esto, cambiar de escena en
+  // pleno fundido dejaba dos escenas en pantalla y Marzipano daba error.
+  function finishTransition() {
+    if (!viewer._cancelCurrentTween) return;
+    viewer._cancelCurrentTween(); viewer._cancelCurrentTween = null;
+    var old = viewer._replacedScene;
+    if (old) {
+      viewer._removeSceneEventListeners(old);
+      old.listLayers().forEach(function (l) { viewer._removeLayerFromStage(l); });
+      viewer._replacedScene = null;
+    }
+    var cur = viewer.scene();
+    if (cur) { cur.listLayers().forEach(function (l) { l.mergeEffects({ opacity: 1 }); }); cur.hotspotContainer().domElement().style.opacity = 1; }
+  }
+  // Fundido que espera (como mucho HOLD_MAX) a que la escena nueva tenga sus imágenes listas:
+  // mientras tanto queda invisible y se sigue viendo la anterior, así no se ven cuadros a medio cargar.
+  var HOLD_MAX = 1500;
+  function onStable(sc, max, cb) {
+    var l = sc.layer(), done = false, timer = null;
+    function finish() { if (done) return; done = true; clearTimeout(timer); l.removeEventListener('renderComplete', check); cb(); }
+    function check(stable) { if (stable) finish(); }
+    l.addEventListener('renderComplete', check);
+    timer = setTimeout(finish, max);
+    return finish;
+  }
+  function switchWhenReady(sc, fade, onFade) {
+    finishTransition();
+    var readyAt = null, mine = {};
+    switching = mine;
+    function setOpacity(op) { sc.listLayers().forEach(function (l) { l.mergeEffects({ opacity: op }); }); sc.hotspotContainer().domElement().style.opacity = op; }
+    sc.switchTo({
+      transitionDuration: HOLD_MAX + fade + 1000,
+      transitionUpdate: function () {
+        if (readyAt === null) { setOpacity(0); return; }
+        var op = fade > 0 ? Math.min(1, (performance.now() - readyAt) / fade) : 1;
+        setOpacity(op);
+        if (op >= 1) setTimeout(function () { if (switching === mine && viewer.scene() === sc) finishTransition(); }, 0);
+      },
+    });
+    onStable(sc, HOLD_MAX, function () {
+      if (switching !== mine || viewer.scene() !== sc) return;
+      readyAt = performance.now();
+      if (onFade) onFade(readyAt);
+    });
+  }
+  var switching = null;
 
   // Los puntos se dibujan en un canvas sincronizado con el panorama (ver hotspots.js).
   var layer = null;
@@ -121,6 +192,10 @@
     var seq = ++navSeq, my = ++loadSeq;
     travelSeq = seq;
     var from = scenes[current], pv = from.view();
+    // El origen se acerca con el detalle que ya tiene cargado: pedir cuadros más nítidos a mitad
+    // del salto hacía que se vieran aparecer mientras se avanzaba.
+    var fromLayer = from.layer(), fg = fromLayer.geometry();
+    fromLayer.setFixedLevel(fg.levelList.indexOf(pv.selectLevel(fg.selectableLevelList)));
     var f0 = pv.fov(), y0 = pv.yaw(), p0 = pv.pitch();
     var dest = getScene(s.id), target = R.effectiveFov(tour, s);
     var start;
@@ -138,28 +213,32 @@
     dv.setLimiter(R.panoLimiter(s.faceSize, 130 * Math.PI / 180, 170 * Math.PI / 180));
     start = { yaw: yawTo, pitch: pitchTo, fov: Math.min(target * 1.22, 2.1) };
     var FADE = Math.max(500, tour.settings.transition != null ? tour.settings.transition : 900);
-    var ready = false, fadeAt = null, t0 = performance.now();
+    var ready = false, switched = false, fadeAt = null, t0 = performance.now();
     viewer.stopMovement();
     viewer.setIdleMovement(Infinity);
     layer.setScene(null, []);
     var slow = setTimeout(function () { if (my === loadSeq && !ready) setBar(0.08); }, 150);
     preload(panoUrls(s), function (p) { if (my === loadSeq && fadeAt === null) setBar(p); }).then(function () { ready = true; clearTimeout(slow); });
     function frame(now) {
-      if (seq !== navSeq) { dv.setLimiter(normalLimiter); return; }   // el usuario eligió otra cosa
+      if (seq !== navSeq) { dv.setLimiter(normalLimiter); dest.layer().setFixedLevel(null); fromLayer.setFixedLevel(null); return; }   // el usuario eligió otra cosa
       var e = Math.max(0, now - t0);                    // el primer cuadro puede traer una hora anterior a t0
       // Acercamiento del origen: arranca con suavidad y avanza siempre (se va frenando sin parar).
       var k = 1 - Math.exp(-Math.pow(e / 750, 1.5));
       pv.setFov(Math.max(0.25, f0 * (1 - 0.45 * k)));
-      if (ready && fadeAt === null && e >= 220) {
-        fadeAt = now;
-        endBar();
+      if (ready && !switched && e >= 220) {
+        switched = true;
+        // Se preparan ya los cuadros del detalle que se verá al final del acercamiento:
+        // si no, al cerrarse la vista aparecían cuadros nuevos justo al llegar.
+        var geo = dest.layer().geometry();
+        dv.setSize({ width: pano.clientWidth, height: pano.clientHeight });
+        dest.layer().setFixedLevel(geo.levelList.indexOf(dv.selectLevel(geo.selectableLevelList)));
         dest.view().setParameters(start);
-        dest.switchTo({ transitionDuration: FADE });
+        switchWhenReady(dest, FADE, function (at) { if (seq === navSeq) { fadeAt = at; endBar(); } });
       }
       if (fadeAt !== null) {
         var u = Math.min(1, (now - fadeAt) / (FADE + 350));
         dest.view().setFov(start.fov + (target - start.fov) * easeOutCubic(u));
-        if (u >= 1) { dv.setFov(target); dv.setLimiter(normalLimiter); travelSeq = 0; holdWheel(); arrived(s, prev); return; }
+        if (u >= 1) { dv.setFov(target); dv.setLimiter(normalLimiter); dest.layer().setFixedLevel(null); fromLayer.setFixedLevel(null); travelSeq = 0; holdWheel(); arrived(s, prev); return; }
       }
       requestAnimationFrame(frame);
     }
@@ -212,7 +291,9 @@
       var sc = getScene(s.id), v = s.initialView || R.DEFAULT_VIEW;
       sc.view().setParameters({ yaw: v.yaw, pitch: v.pitch, fov: R.effectiveFov(tour, s) });
       var fade = (prev && prev.kind !== 'image' && current !== COVER) || (current === COVER && !!coverPano());
-      sc.switchTo({ transitionDuration: fade ? (tour.settings.transition != null ? tour.settings.transition : 900) : 0 });
+      if (fade) switchWhenReady(sc, tour.settings.transition != null ? tour.settings.transition : 900);
+      else { finishTransition(); sc.switchTo({ transitionDuration: 0 }); }
+      firstShown(sc);
       layer.setScene(sc, s.hotspots || []);
       hideStills(); showLayer('cover', false);
       if (autoOn && autorotate) viewer.setIdleMovement((tour.settings.idleSeconds || 6) * 1000, autorotate);
@@ -239,6 +320,16 @@
     renderMenu();
   }
 
+  // La pantalla de carga se quita cuando la primera escena ya se ve completa (como mucho 6 s),
+  // para que el cliente no vea el panorama dibujándose por cuadros al entrar.
+  var loaderGone = false;
+  function firstShown(sc) {
+    if (loaderGone) return;
+    loaderGone = true;
+    function hide() { setTimeout(function () { $('loader').classList.add('done'); }, 150); }
+    if (sc) onStable(sc, 6000, hide); else hide();
+  }
+
   // ---------- Portada ----------
   function coverPano() { var c = tour.cover; return c && c.type === 'pano' && sceneData(c.scene) && sceneData(c.scene).kind !== 'image' ? sceneData(c.scene) : null; }
   function hasCover() { var c = tour.cover; return !!(c && (c.type === 'pano' ? coverPano() : c.image)); }
@@ -250,7 +341,9 @@
       endBar();
       var sc = getScene(s.id), v = c.view || s.initialView || R.DEFAULT_VIEW;
       sc.view().setParameters({ yaw: v.yaw, pitch: v.pitch, fov: v.fov != null ? v.fov : R.effectiveFov(tour, s) });
-      sc.switchTo({ transitionDuration: current && current !== COVER ? 700 : 0 });
+      if (current && current !== COVER) switchWhenReady(sc, 700);
+      else { finishTransition(); sc.switchTo({ transitionDuration: 0 }); }
+      firstShown(sc);
       showLayer('cover', false); hideStills();
       layer.setScene(null, []);
       if (c.interactive) viewer.controls().enable(); else viewer.controls().disable();
@@ -624,6 +717,7 @@
 
     bindPanoGestures();   // antes que el visor: tiene que ver la rueda primero
     viewer = new M.Viewer($('pano'), { controls: { mouseViewMode: 'drag' } });
+    keepTextures();
     makeLayer();
     if (qs.has('debug')) window.__r360 = { viewer: viewer, layer: function () { return layer; }, current: function () { return current; } };   // solo para pruebas
     autorotate = M.autorotate({ yawSpeed: tour.settings.autorotateSpeed || 0.03, targetPitch: 0, targetFov: R.effectiveFov(tour, null) });
@@ -642,7 +736,10 @@
       $('btnAuto').setAttribute('aria-pressed', String(autoOn));
       if (withCover) showCover(); else goTo(first ? first.id : startId());
       if (!autoOn) setAuto(false);
-      setTimeout(function () { $('loader').classList.add('done'); }, 350);
+      if (!withCover || !coverPano()) {
+        var st = withCover ? null : sceneData(first ? first.id : startId());
+        if (!st || st.kind === 'image') firstShown(null);
+      }
     });
   }).catch(function (e) {
     fail(location.protocol === 'file:' ? 'Abre este recorrido desde un servidor web (súbelo a tu hosting). Los navegadores no permiten cargarlo como archivo local.' : 'No se pudo cargar el recorrido: ' + e.message);

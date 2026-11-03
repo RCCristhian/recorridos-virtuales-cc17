@@ -72,7 +72,7 @@
     var geometry = new M.CubeGeometry(s.levels);
     var limiter = panoLimiter(s.faceSize, 110 * Math.PI / 180);
     var view = new M.RectilinearView({ yaw: v.yaw, pitch: v.pitch, fov: v.fov }, limiter);
-    return viewer.createScene({ source: source, geometry: geometry, view: view, pinFirstLevel: true });
+    return viewer.createScene({ source: source, geometry: geometry, view: view, pinFirstLevel: true, textureStoreOpts: opts && opts.textureStoreOpts });
   }
 
   // Las sombras van dibujadas dentro del SVG (trazo oscuro debajo): sin filtros CSS,
