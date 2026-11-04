@@ -180,6 +180,10 @@
 
   // ---------- Capa ----------
   // opts: { onClick(h), labelFor(h) → texto, labels: 'hover' | 'always', accent }
+  // opts.gl: los puntos se pintan DENTRO del mismo lienzo WebGL del panorama (visor público).
+  // En celulares (sobre todo iPhone) el navegador puede mostrar el lienzo WebGL y cualquier otra
+  // capa en cuadros distintos, aunque se dibujen a la vez: los puntos "bailaban" al arrastrar.
+  // En un único lienzo la imagen y los puntos salen siempre juntos, en cualquier navegador.
   function HotspotLayer(viewer, host, opts) {
     var self = this;
     this.viewer = viewer; this.host = host; this.opts = opts || {};
@@ -187,10 +191,12 @@
     this.canvas = document.createElement('canvas');
     this.canvas.className = 'r360-layer';
     this.canvas.style.cssText = 'position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;z-index:2';
-    host.appendChild(this.canvas);
+    this.gl = null;
+    if (this.opts.gl) { try { this.gl = new GlOverlay(viewer.stage().webGlContext()); } catch (e) { this.gl = null; } }
+    if (!this.gl) host.appendChild(this.canvas);   // sin WebGL: capa canvas aparte, como antes
     this.ctx = this.canvas.getContext('2d');
     this.font = '500 13px "Schibsted Grotesk", "Segoe UI", system-ui, sans-serif';
-    this._draw = function () { self.draw(); };
+    this._draw = function () { self.paint(); if (self.gl) self.gl.compose(self.canvas, self._drawn); };
     viewer.renderLoop().addEventListener('afterRender', this._draw);
     // Bucle propio solo para las animaciones cuando el panorama está quieto.
     this._raf = 0;
@@ -198,6 +204,52 @@
     this._raf = requestAnimationFrame(tick);
     this._bindPointer();
   }
+
+  // Pinta el canvas de los puntos encima de lo que el panorama acaba de dibujar en WebGL.
+  // Se llama justo después de que Marzipano dibuja el cuadro (mismo momento, mismo lienzo).
+  // Deja el estado de WebGL que Marzipano vuelve a fijar en cada cuadro; las opciones de carga de
+  // imágenes quedan como las usa Marzipano (voltear y premultiplicar).
+  function GlOverlay(gl) {
+    if (!gl) throw new Error('sin WebGL');
+    this.g = gl;
+    var vs = 'attribute vec2 p;varying vec2 uv;void main(){uv=p*0.5+0.5;gl_Position=vec4(p,0.0,1.0);}';
+    var fs = 'precision mediump float;varying vec2 uv;uniform sampler2D t;void main(){gl_FragColor=texture2D(t,uv);}';
+    function sh(type, src) { var s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); return s; }
+    var pr = gl.createProgram();
+    gl.attachShader(pr, sh(gl.VERTEX_SHADER, vs)); gl.attachShader(pr, sh(gl.FRAGMENT_SHADER, fs));
+    gl.linkProgram(pr);
+    if (!gl.getProgramParameter(pr, gl.LINK_STATUS)) throw new Error('shader');
+    this.prog = pr; this.aP = gl.getAttribLocation(pr, 'p'); this.uT = gl.getUniformLocation(pr, 't');
+    this.buf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.buf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+    this.tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, this.tex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  }
+  GlOverlay.prototype.compose = function (canvas, drawn) {
+    var gl = this.g;
+    if (!drawn || !canvas.width || !canvas.height || gl.isContextLost()) return;
+    gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+    gl.disable(gl.DEPTH_TEST);
+    gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.tex);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
+    gl.useProgram(this.prog);
+    gl.uniform1i(this.uT, 0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.buf);
+    gl.enableVertexAttribArray(this.aP);
+    gl.vertexAttribPointer(this.aP, 2, gl.FLOAT, false, 0, 0);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    gl.disableVertexAttribArray(this.aP);
+    gl.enable(gl.DEPTH_TEST);
+  };
 
   HotspotLayer.prototype.setScene = function (scene, list) {
     this.scene = scene; this.list = list || []; this.hover = null;
@@ -207,7 +259,14 @@
   HotspotLayer.prototype.setSelected = function (id) { this.selected = id; this.draw(); };
   HotspotLayer.prototype.refresh = function () { this.draw(); };
 
+  // Volver a dibujar. Con opts.gl se pide un cuadro nuevo del panorama y los puntos se pintan
+  // en ese mismo cuadro (fuera de él, el lienzo WebGL ya se mostró y no se puede retocar).
   HotspotLayer.prototype.draw = function () {
+    if (this.gl) { this.viewer.renderLoop().renderOnNextFrame(); return; }
+    this.paint();
+  };
+
+  HotspotLayer.prototype.paint = function () {
     var cv = this.canvas, ctx = this.ctx, host = this.host;
     var w = host.clientWidth, h = host.clientHeight, dpr = window.devicePixelRatio || 1;
     if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) { cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); }
@@ -215,6 +274,7 @@
     ctx.clearRect(0, 0, w, h);
     this.hits = [];
     this._needsAnim = false;
+    this._drawn = false;
     var scene = this.scene;
     if (!scene || this.viewer.scene() !== scene) return;
     var view = scene.view(), now = performance.now();
@@ -235,6 +295,7 @@
       var color = (hs.type === 'link' && hs.color) || '#fff';
       var ringColor = isHover ? accent : color;
       if (anim) this._needsAnim = true;
+      this._drawn = true;
 
       if (style !== 'flechas') {
         if (anim) { var p = pulse(now); if (p) drawRing(ctx, pr, r * p.scale, bs.stroke, k, color, p.alpha); }
@@ -320,6 +381,7 @@
     var block = this._block, host = this.host;
     ['mousedown', 'touchstart'].forEach(function (ev) { host.removeEventListener(ev, block, { capture: true, passive: true }); });
     this.canvas.remove();
+    if (this.gl) { var g = this.gl.g; g.deleteTexture(this.gl.tex); g.deleteBuffer(this.gl.buf); g.deleteProgram(this.gl.prog); this.gl = null; }
   };
 
   window.R360 = window.R360 || {};

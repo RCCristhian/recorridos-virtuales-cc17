@@ -80,6 +80,8 @@
   // lo nuevo aparecía borroso y se afinaba por cuadros. Ahora cada escena se muestra con UN nivel
   // completo, el adecuado a esta pantalla, preparado entero antes de verla. Solo al acercarse mucho
   // se piden cuadros más nítidos, y entonces el nivel completo queda debajo: nunca hay huecos.
+  // Celular (pantalla táctil). Se define aquí arriba porque lo usan los cálculos de memoria de abajo.
+  var PHONE = window.matchMedia('(pointer: coarse)').matches;
   var PHONE_FACE = 1000;                    // en celular: más nítido casi no se nota y gasta mucha memoria
   var levelIdx = {};
   function baseFov(s) {
@@ -156,7 +158,6 @@
   // Marzipano borra todas las imágenes de una escena al dejarla, así que al volver se preparaban
   // otra vez cuadro por cuadro (muy visible en iPhone). Se conservan las de las últimas escenas
   // visitadas; en celulares menos, porque su memoria es limitada.
-  var PHONE = window.matchMedia('(pointer: coarse)').matches;
   // En celular: la escena actual y la anterior (lo justo para ir y volver), cada una entera.
   // Si se pasa de ahí, el fundido igual espera a que la escena esté lista: no se ven cuadros.
   var KEEP_SCENES = PHONE ? 1 : 4;         // escenas que dejaste y se conservan
@@ -228,6 +229,7 @@
   var layer = null;
   function makeLayer() {
     layer = new R.HotspotLayer(viewer, $('pano'), {
+      gl: true,               // en el mismo lienzo que el panorama: en celular no se desfasan
       labels: 'hover',
       filter: function (h) { return h.type !== 'link' || !!sceneData(h.target); },
       labelFor: function (h) { return h.type === 'link' ? (h.label || (sceneData(h.target) || {}).name || '') : (h.title || ''); },
