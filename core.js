@@ -63,11 +63,15 @@
     });
   }
 
+  // Carpeta de los mosaicos de un panorama. Al reemplazar su imagen se usa una carpeta nueva
+  // (s.tileDir); los proyectos de antes usan la del id de la escena.
+  function tileDir(s) { return 'tiles/' + (s.tileDir || s.id); }
+
   function createScene(viewer, base, s, opts) {
     var v = s.initialView || DEFAULT_VIEW;
     var source = M.ImageUrlSource.fromString(
-      base + 'tiles/' + s.id + '/{z}/{f}/{y}/{x}.jpg',
-      { cubeMapPreviewUrl: base + 'tiles/' + s.id + '/preview.jpg' }
+      base + tileDir(s) + '/{z}/{f}/{y}/{x}.jpg',
+      { cubeMapPreviewUrl: base + tileDir(s) + '/preview.jpg' }
     );
     var geometry = new M.CubeGeometry(s.levels);
     var limiter = panoLimiter(s.faceSize, 110 * Math.PI / 180);
@@ -290,7 +294,7 @@
 
   window.R360 = {
     FONTS: FONTS, DEFAULT_THEME: DEFAULT_THEME, theme: theme, rgba: rgba, fontStack: fontStack, loadFont: loadFont,
-    esc: esc, createScene: createScene, hotspotEl: hotspotEl, addHotspot: addHotspot, isFlat: isFlat, autoTilt: autoTilt,
+    esc: esc, createScene: createScene, tileDir: tileDir, hotspotEl: hotspotEl, addHotspot: addHotspot, isFlat: isFlat, autoTilt: autoTilt,
     LINK_STYLES: LINK_STYLES, LINK_DEFAULTS: LINK_DEFAULTS, hasArrowAngle: hasArrowAngle, panoLimiter: panoLimiter, panoGestures: panoGestures, safariPinch: safariPinch, wheelFactor: wheelFactor, stopPanoEvents: stopPanoEvents, zoomPan: zoomPan, DEFAULT_VIEW: DEFAULT_VIEW,
   };
 })();

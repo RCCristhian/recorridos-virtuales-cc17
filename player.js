@@ -68,12 +68,12 @@
     if (!lv || lv.fallbackOnly) return urls;
     var n = Math.round(lv.size / lv.tileSize);
     ['b', 'd', 'f', 'l', 'r', 'u'].forEach(function (f) {
-      for (var y = 0; y < n; y++) for (var x = 0; x < n; x++) urls.push(base + 'tiles/' + s.id + '/' + z + '/' + f + '/' + y + '/' + x + '.jpg');
+      for (var y = 0; y < n; y++) for (var x = 0; x < n; x++) urls.push(base + R.tileDir(s) + '/' + z + '/' + f + '/' + y + '/' + x + '.jpg');
     });
     return urls;
   }
   // Lo que necesita un panorama para verse completo en esta pantalla: vista previa + su nivel.
-  function panoUrls(s) { return [base + 'tiles/' + s.id + '/preview.jpg'].concat(levelUrls(s, displayLevel(s))); }
+  function panoUrls(s) { return [base + R.tileDir(s) + '/preview.jpg'].concat(levelUrls(s, displayLevel(s))); }
 
   // ---------- Nivel de detalle por pantalla ----------
   // Marzipano pide los cuadros nítidos según hacia dónde se mira y los dibuja según llegan: al girar,
