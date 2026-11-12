@@ -120,6 +120,23 @@ body.panel-right #topRight { right: auto; left: calc(20px + env(safe-area-inset-
   max-width: calc(100vw - 120px); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 #sceneTitle:empty, body.hide-scene-name #sceneTitle, body.is-cover #sceneTitle { display: none; }
+/* Punto de variación: nombre de la variante que se ve (aparece un momento) y lista para elegir. */
+#variantChip {
+  position: fixed; left: 50%; top: calc(24px + var(--sat)); transform: translate(-50%, -6px);
+  padding: 8px 16px; border-radius: 999px; background: rgba(20,22,26,0.62); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+  color: #fff; font-size: 13px; letter-spacing: 0.04em; pointer-events: none; z-index: 6; opacity: 0;
+  transition: opacity .25s ease, transform .25s ease; max-width: calc(100vw - 140px); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+#variantChip.on { opacity: 1; transform: translate(-50%, 0); }
+#variantMenu {
+  position: fixed; z-index: 20; display: flex; flex-direction: column; gap: 2px; padding: 6px; min-width: 150px; max-width: calc(100vw - 20px);
+  border-radius: 12px; background: rgba(20,22,26,0.86); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); box-shadow: 0 10px 30px rgba(0,0,0,.35);
+}
+#variantMenu[hidden] { display: none; }
+#variantMenu button { font: inherit; font-size: 14px; color: #fff; background: transparent; border: 0; border-radius: 8px; padding: 9px 12px; text-align: left; cursor: pointer; }
+#variantMenu button:hover { background: rgba(255,255,255,.1); }
+#variantMenu button.on { background: var(--accent); }
+@media (prefers-reduced-motion: reduce) { #variantChip { transition: none; } }
 body:not(.panel-closed) #sceneTitle { left: calc(50% + var(--panel-w) / 2); max-width: calc(100vw - var(--panel-w) - 120px); }
 body.panel-right:not(.panel-closed) #sceneTitle { left: calc(50% - var(--panel-w) / 2); }
 

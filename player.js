@@ -25,7 +25,7 @@
   function byId(list, id) { for (var i = 0; i < (list || []).length; i++) if (list[i].id === id) return list[i]; return null; }
   function sceneData(id) { return byId(tour.scenes, id); }
   // Nombre que se muestra abajo; vacío lo oculta (el diseño también puede ocultarlo en todo el recorrido).
-  function sceneLabel(s) { return s.hideName ? '' : s.name || ''; }
+  function sceneLabel(s) { return s.hideName ? '' : R.sceneTitle(s); }
   function paragraphs(text) {
     return String(text || '').split(/\n{2,}/).map(function (p) { return '<p>' + esc(p).replace(/\n/g, '<br>') + '</p>'; }).join('');
   }
@@ -105,19 +105,28 @@
   }
   function levelBytes(s) { var lv = s.levels[displayLevel(s)], n = lv.size / lv.tileSize; return 6 * n * n * lv.tileSize * lv.tileSize * 4; }
   // Al acercarse mucho se deja pedir más detalle; si no, la escena usa siempre su nivel completo.
+  // Cada capa de la escena (la imagen propia y, si hay, la de una variación) con su nivel.
   function applyLevel(sc, s) {
     if (traveling()) return;
-    var v = sc.view(), l = sc.layer(), geo = l.geometry(), idx = displayLevel(s);
-    var want = geo.levelList.indexOf(v.selectLevel(geo.selectableLevelList));
-    l.setFixedLevel(want > idx && v.fov() < baseFov(s) * 0.85 ? null : idx);
+    var v = sc.view();
+    sc.listLayers().forEach(function (l) {
+      var ps = l.__ps || s, geo = l.geometry(), idx = displayLevel(ps);
+      var want = geo.levelList.indexOf(v.selectLevel(geo.selectableLevelList));
+      l.setFixedLevel(want > idx && v.fov() < baseFov(ps) * 0.85 ? null : idx);
+    });
+  }
+  function layerReady(l, ps) {
+    var geo = l.geometry(), st = l.textureStore();
+    if (!st) return false;
+    var tiles = geo.levelTiles(geo.levelList[displayLevel(ps)]);
+    for (var i = 0; i < tiles.length; i++) if (!st.texture(tiles[i])) return false;
+    return true;
   }
   function levelReady(id) {
     var sc = scenes[id];
     if (!sc) return false;
-    var l = sc.layer(), geo = l.geometry(), st = l.textureStore();
-    var tiles = geo.levelTiles(geo.levelList[displayLevel(sceneData(id))]);
-    for (var i = 0; i < tiles.length; i++) if (!st.texture(tiles[i])) return false;
-    return true;
+    var s = sceneData(id);
+    return sc.listLayers().every(function (l) { return layerReady(l, l.__ps || s); });
   }
   // Escenas con su nivel completo ya preparado en la memoria de imagen, la de mayor prioridad primero.
   // La memoria del celular es limitada: se guardan las que caben (la actual y sus vecinas).
@@ -172,9 +181,10 @@
     };
     viewer._removeLayerFromStage = function (l) {
       stage.removeLayer(l);
+      if (l.__gone) return;              // capa de variación que se borra: no se guarda
       l.unpinFirstLevel();
       keptLayers.unshift(l);
-      while (keptLayers.length > KEEP_SCENES) keptLayers.pop().textureStore().clearNotPinned();
+      while (keptLayers.length > KEEP_SCENES) { var k = keptLayers.pop(); if (k.textureStore()) k.textureStore().clearNotPinned(); }
     };
   }
   // Termina ya el fundido en curso: quita la escena anterior. Sin esto, cambiar de escena en
@@ -231,13 +241,162 @@
     layer = new R.HotspotLayer(viewer, $('pano'), {
       gl: true,               // en el mismo lienzo que el panorama: en celular no se desfasan
       labels: 'hover',
-      filter: function (h) { return h.type !== 'link' || !!sceneData(h.target); },
-      labelFor: function (h) { return h.type === 'link' ? (h.label || (sceneData(h.target) || {}).name || '') : (h.title || ''); },
-      onClick: function (h) {
+      filter: function (h) { return h.type === 'variant' ? (h.options || []).length > 1 && R.variantOf(sceneData(current)) === h : h.type !== 'link' || !!sceneData(h.target); },   // una sola variación por vista
+      labelFor: function (h) {
+        if (h.type === 'variant') return variantLabel(h);
+        return h.type === 'link' ? (h.label || R.sceneTitle(sceneData(h.target))) : (h.title || '');
+      },
+      onClick: function (h, e) {
+        if (h.type === 'variant') return variantClick(h, e);
         if (h.type === 'link') goTo(h.target, { hotspot: h }); else openText(h.title || 'Información', h.text);
       },
     });
   }
+
+  // ---------- Punto de variación: otra imagen de la misma cámara ----------
+  // La variante es una capa más de la MISMA escena (comparte la vista): la dirección y el zoom no
+  // cambian y los demás puntos siguen igual. La imagen nueva se prepara entera y aparece con un
+  // fundido corto encima de la anterior; como lo demás es idéntico, solo se ve cambiar esa zona.
+  var variantSel = {};          // id de escena -> id de la opción que se ve
+  var VAR_FADE = 380, varSeq = 0;
+  function selIndex(s, h) {
+    var id = variantSel[s.id], o = h.options;
+    for (var i = 0; i < o.length; i++) if (o[i].id === id) return i;
+    return 0;
+  }
+  function optName(o, i) { return R.optionName(o, i); }
+  // Variaciones ligadas: grupo -> nombre de la opción elegida. Al elegir «Cocina blanca» en una vista,
+  // las demás vistas que tengan una opción con ese mismo nombre la muestran también (al llegar a ellas).
+  // Sin grupo, todas las vistas del recorrido se ligan por nombre; el grupo solo sirve para separar.
+  var linkSel = {};
+  // Cada carpeta liga por su cuenta: «Cocina blanca» de una carpeta no cambia la de otra carpeta.
+  function linkGroup(s, h) { return h ? (R.linkKey(h.link) || '*') + '|' + ((s && s.folder) || '') : ''; }
+  // Índice de la opción que pide el grupo en esta escena, o -1 si no aplica.
+  function linkedIndex(s) {
+    var h = R.variantOf(s), g = linkGroup(s, h);
+    if (!g || linkSel[g] == null) return -1;
+    for (var i = 0; i < h.options.length; i++) if (R.linkKey(optName(h.options[i], i)) === linkSel[g]) return i;
+    return -1;
+  }
+  // Antes de mostrar una escena: si su grupo tiene otra opción elegida, se pone ya (sin fundido,
+  // porque la escena aún no se ve; el cambio de escena espera a que esa imagen esté lista).
+  function syncLinked(s) {
+    if (!s || s.kind === 'image') return;
+    var h = R.variantOf(s), i = linkedIndex(s);
+    if (i < 0 || i === selIndex(s, h)) return;
+    setVariant(s, i, { instant: true });
+  }
+  // Imágenes de la opción ligada, para prepararlas junto con la escena.
+  function linkedUrls(s) {
+    var i = linkedIndex(s), h = i >= 0 && R.variantOf(s);
+    return h && !h.options[i].base ? panoUrls(R.optionScene(s, h.options[i])) : [];
+  }
+  function variantLabel(h) {
+    var s = sceneData(current); if (!s) return '';
+    if (h.label) return h.label;
+    if (h.options.length > 2 && h.pick === 'list') return 'Elegir variante';
+    var n = (selIndex(s, h) + 1) % h.options.length;
+    return 'Ver ' + optName(h.options[n], n);
+  }
+  function variantClick(h, e) {
+    var s = sceneData(current); if (!s) return;
+    if (h.options.length > 2 && h.pick === 'list') return openVariantMenu(s, h, e);
+    setVariant(s, (selIndex(s, h) + 1) % h.options.length);
+  }
+  function fadeLayer(l, from, to, done) {
+    var t0 = performance.now();
+    (function step() {
+      if (!l.textureStore()) return done && done();
+      var u = Math.min(1, (performance.now() - t0) / VAR_FADE), e = u < 0.5 ? 2 * u * u : 1 - Math.pow(-2 * u + 2, 2) / 2;
+      l.mergeEffects({ opacity: from + (to - from) * e });
+      if (u < 1) requestAnimationFrame(step); else if (done) done();
+    })();
+  }
+  function dropLayer(sc, l) {
+    if (sc.listLayers().indexOf(l) < 0) return;
+    l.__gone = true;
+    sc.destroyLayer(l);
+  }
+  function setVariant(s, idx, opts) {
+    var instant = opts && opts.instant;
+    var h = R.variantOf(s), sc = instant ? getScene(s.id) : scenes[s.id];
+    if (!h || !sc) return;
+    var o = h.options[idx]; if (!o) return;
+    var seq = ++varSeq, before = sc.listLayers().slice(1);
+    variantSel[s.id] = o.id;
+    if (linkGroup(s, h)) linkSel[linkGroup(s, h)] = R.linkKey(optName(o, idx));
+    if (instant) {
+      // La escena todavía no se ve: se cambia de una vez.
+      before.forEach(function (b) { dropLayer(sc, b); });
+      if (!o.base) {
+        var ips = R.optionScene(s, o), ilv = displayLevel(ips);
+        var il = R.createVariantLayer(sc, base, ips, { textureStoreOpts: { previouslyVisibleCacheSize: TILE_CACHE } });
+        il.pinLevel(ilv); il.setFixedLevel(ilv);
+      }
+      return;
+    }
+    showVariantName(optName(o, idx));
+    if (o.base) {
+      // Vuelve la imagen propia: se desvanecen las capas de encima.
+      before.forEach(function (l) { fadeLayer(l, l.effects().opacity != null ? l.effects().opacity : 1, 0, function () { dropLayer(sc, l); }); });
+      layer.refresh();
+      return;
+    }
+    var ps = R.optionScene(s, o), lv = displayLevel(ps);
+    var l = R.createVariantLayer(sc, base, ps, { textureStoreOpts: { previouslyVisibleCacheSize: TILE_CACHE } });
+    l.mergeEffects({ opacity: 0 });
+    l.pinLevel(lv);
+    l.setFixedLevel(lv);
+    applyLevel(sc, s);
+    var t0 = performance.now(), slow = false;
+    (function wait() {
+      if (seq !== varSeq || sc.listLayers().indexOf(l) < 0) { if (seq !== varSeq) dropLayer(sc, l); return; }
+      if (!layerReady(l, ps) && performance.now() - t0 < 4000) {
+        if (!slow && performance.now() - t0 > 250) { slow = true; setBar(0.2); }
+        return setTimeout(wait, 30);
+      }
+      if (slow) endBar();
+      fadeLayer(l, 0, 1, function () { if (seq === varSeq) before.forEach(function (b) { dropLayer(sc, b); }); });
+    })();
+    layer.refresh();
+  }
+  // Las otras imágenes de la escena bajan a la caché en segundo plano, para que el cambio no espere.
+  function preloadVariants(s) {
+    var h = R.variantOf(s); if (!h) return;
+    var urls = [];
+    h.options.forEach(function (o) { if (!o.base) urls = urls.concat(panoUrls(R.optionScene(s, o))); });
+    setTimeout(function () { preload(urls); }, 400);
+  }
+  // Si el editor cambió las variantes, la escena vuelve a su imagen si la elegida ya no existe.
+  function checkVariant(s) {
+    var sc = scenes[s.id]; if (!sc) return;
+    var h = R.variantOf(s), id = variantSel[s.id];
+    if (id && (!h || !h.options.some(function (o) { return o.id === id && !o.base; }))) {
+      delete variantSel[s.id];
+      sc.listLayers().slice(1).forEach(function (l) { dropLayer(sc, l); });
+    }
+  }
+  var chipTimer = null;
+  function showVariantName(name) {
+    var c = $('variantChip'); if (!c) return;
+    c.textContent = name; c.classList.add('on');
+    clearTimeout(chipTimer); chipTimer = setTimeout(function () { c.classList.remove('on'); }, 1600);
+  }
+  // Con 3 o más variantes se puede mostrar una lista junto al punto.
+  function openVariantMenu(s, h, e) {
+    var m = $('variantMenu'), cur = selIndex(s, h);
+    m.innerHTML = h.options.map(function (o, i) {
+      return '<button data-i="' + i + '"' + (i === cur ? ' class="on" aria-current="true"' : '') + '>' + esc(optName(o, i)) + '</button>';
+    }).join('');
+    m.hidden = false;
+    var W = window.innerWidth, H = window.innerHeight, r = m.getBoundingClientRect();
+    var x = Math.min(W - r.width - 10, Math.max(10, (e ? e.clientX : W / 2) - r.width / 2));
+    var y = (e ? e.clientY : H / 2) - r.height - 34; if (y < 10) y = (e ? e.clientY : H / 2) + 34;
+    m.style.left = x + 'px'; m.style.top = Math.min(H - r.height - 10, y) + 'px';
+    m.onclick = function (ev) { var b = ev.target.closest('[data-i]'); if (!b) return; closeVariantMenu(); setVariant(s, +b.dataset.i); };
+  }
+  function closeVariantMenu() { var m = $('variantMenu'); if (m) m.hidden = true; }
+  document.addEventListener('pointerdown', function (e) { var m = $('variantMenu'); if (m && !m.hidden && !m.contains(e.target)) closeVariantMenu(); }, true);
 
   // Mientras dura un viaje no se atiende el zoom del usuario: la inercia del trackpad sigue enviando
   // rueda un buen rato después de soltar los dedos y se notaría como un tirón al llegar.
@@ -276,6 +435,7 @@
     keepResident([s.id, prev.id]);
     var f0 = pv.fov(), y0 = pv.yaw(), p0 = pv.pitch();
     var dest = getScene(s.id), target = R.effectiveFov(tour, s);
+    syncLinked(s);
     var start;
     // El destino entra un poco más abierto y se sigue cerrando: el avance continúa en la misma dirección.
     // Marzipano limita el campo de visión horizontal (110°); en pantallas anchas eso recortaba la
@@ -296,7 +456,7 @@
     viewer.setIdleMovement(Infinity);
     layer.setScene(null, []);
     var slow = setTimeout(function () { if (my === loadSeq && !ready) setBar(0.08); }, 150);
-    preload(panoUrls(s), function (p) { if (my === loadSeq && fadeAt === null) setBar(p); }).then(function () { ready = true; clearTimeout(slow); });
+    preload(panoUrls(s).concat(linkedUrls(s)), function (p) { if (my === loadSeq && fadeAt === null) setBar(p); }).then(function () { ready = true; clearTimeout(slow); });
     function frame(now) {
       if (seq !== navSeq) { dv.setLimiter(normalLimiter); return; }   // el usuario eligió otra cosa
       var e = Math.max(0, now - t0);                    // el primer cuadro puede traer una hora anterior a t0
@@ -335,7 +495,8 @@
     var s = sceneData(id);
     if (!s) return;
     var seq = ++navSeq, my = ++loadSeq;
-    var urls = s.kind === 'image' ? [base + s.image] : panoUrls(s);
+    closeVariantMenu();
+    var urls = s.kind === 'image' ? [base + s.image] : panoUrls(s).concat(linkedUrls(s));
     var prev = current && current !== COVER ? sceneData(current) : null;
     if (opts.hotspot && prev && prev.kind !== 'image' && s.kind !== 'image' && scenes[current]) { --navSeq; --loadSeq; return travel(s, opts.hotspot, prev); }
     var slow = setTimeout(function () { if (my === loadSeq) setBar(0.08); }, 120);
@@ -353,7 +514,7 @@
       var fromImage = prev && prev.kind === 'image' && current !== COVER;
       var next = fromImage ? 1 - stillIdx : stillIdx;
       var nextId = next ? 'still2' : 'still', prevId = stillIdx ? 'still2' : 'still';
-      stillView(next).load(base + s.image, s.framing, s.name);
+      stillView(next).load(base + s.image, s.framing, R.sceneTitle(s));
       $(nextId).classList.add('top'); $(prevId).classList.remove('top');
       showLayer(nextId, true); showLayer('cover', false);
       if (fromImage && next !== stillIdx) setTimeout(function () { if (stillIdx === next) showLayer(prevId, false); }, 480);
@@ -363,6 +524,7 @@
       layer.setScene(null, []);
     } else {
       var sc = getScene(s.id), v = s.initialView || R.DEFAULT_VIEW;
+      syncLinked(s);
       sc.view().setParameters({ yaw: v.yaw, pitch: v.pitch, fov: R.effectiveFov(tour, s) });
       var fade = (prev && prev.kind !== 'image' && current !== COVER) || (current === COVER && !!coverPano());
       settle(s);
@@ -370,6 +532,7 @@
       else { finishTransition(); sc.switchTo({ transitionDuration: 0 }); }
       firstShown(sc);
       layer.setScene(sc, s.hotspots || []);
+      preloadVariants(s);
       hideStills(); showLayer('cover', false);
       if (autoOn && autorotate) viewer.setIdleMovement((tour.settings.idleSeconds || 6) * 1000, autorotate);
       if (!prev && autoOn && autorotate) viewer.startMovement(autorotate);
@@ -385,6 +548,7 @@
 
   function arrived(s, prev) {
     settle(s);
+    preloadVariants(s);
     viewer.controls().enable();
     layer.setScene(scenes[s.id], s.hotspots || []);
     hideStills(); showLayer('cover', false);
@@ -412,10 +576,11 @@
   // Portada con un panorama 360: vista y zoom elegidos; el cliente puede girarla solo si así se configuró.
   function showCoverPano(s) {
     var c = tour.cover, seq = ++navSeq, my = ++loadSeq;
-    preload(panoUrls(s), function (p) { if (my === loadSeq) setBar(p); }).then(function () {
+    preload(panoUrls(s).concat(linkedUrls(s)), function (p) { if (my === loadSeq) setBar(p); }).then(function () {
       if (seq !== navSeq) return;
       endBar();
       var sc = getScene(s.id), v = c.view || s.initialView || R.DEFAULT_VIEW;
+      syncLinked(s);
       settle(s);
       sc.view().setParameters({ yaw: v.yaw, pitch: v.pitch, fov: v.fov != null ? v.fov : R.effectiveFov(tour, s) });
       if (current && current !== COVER) switchWhenReady(sc, 700);
@@ -473,7 +638,7 @@
   function nodeLabel(n) {
     if (n.type === 'folder' || n.type === 'link') return n.name;
     var ref = n.type === 'plan' ? byId(tour.plans, n.ref) : sceneData(n.ref);
-    return ref ? ref.name : null;
+    return ref ? (n.type === 'plan' ? ref.name : R.sceneTitle(ref)) : null;
   }
   function visibleChildren(list) { return (list || []).filter(function (n) { return nodeLabel(n) && (n.type !== 'folder' || n.children.length); }); }
   function currentList() {
@@ -493,7 +658,7 @@
     var nav = $('menu'), html = '';
     if (!tour.menu.length) {
       html = '<ul>' + tour.scenes.map(function (s) {
-        return '<li><button data-scene="' + esc(s.id) + '"' + (s.id === current ? ' class="active" aria-current="true"' : '') + '><span>' + esc(s.name) + '</span></button></li>';
+        return '<li><button data-scene="' + esc(s.id) + '"' + (s.id === current ? ' class="active" aria-current="true"' : '') + '><span>' + esc(R.sceneTitle(s)) + '</span></button></li>';
       }).join('') + '</ul>';
     } else {
       var cur = currentList();
@@ -619,7 +784,7 @@
     var p = byId(tour.plans, id);
     if (!p) return;
     var markers = (p.markers || []).filter(function (m) { return sceneData(m.target); }).map(function (m) {
-      var name = sceneData(m.target).name;
+      var name = R.sceneTitle(sceneData(m.target));
       return '<button class="plan-marker" style="left:' + (m.x * 100) + '%;top:' + (m.y * 100) + '%" data-target="' + esc(m.target) + '" aria-label="Ver ' + esc(name) + '">' +
         ICONS.eye + '<span class="r360-tip">' + esc(name) + '</span></button>';
     }).join('');
@@ -750,6 +915,7 @@
     st.setProperty('--logo-x', (t.logoX || 0) + 'px');
     st.setProperty('--menu-active', t.menuActive || t.accent);
     st.setProperty('--hs-accent', t.hotspotHover || t.accent);
+    st.setProperty('--hs-color', t.hotspotColor || '#ffffff');
     st.setProperty('--menu-hover', R.rgba(t.menuHover || '#ffffff', t.menuHoverOpacity != null ? t.menuHoverOpacity : 0.08));
     st.setProperty('--toggle-bg', t.toggleBg || '#111111');
     st.setProperty('--toggle-fg', t.toggleColor || '#ffffff');
@@ -787,8 +953,8 @@
     var s = keep && sceneData(keep);
     if (!s) { goHome(); return; }
     $('sceneTitle').textContent = sceneLabel(s);
-    if (s.kind === 'image') { if (stills[stillIdx]) stills[stillIdx].load(base + s.image, s.framing, s.name); }
-    else if (scenes[keep]) layer.setScene(scenes[keep], s.hotspots || []);
+    if (s.kind === 'image') { if (stills[stillIdx]) stills[stillIdx].load(base + s.image, s.framing, R.sceneTitle(s)); }
+    else if (scenes[keep]) { checkVariant(s); layer.setScene(scenes[keep], s.hotspots || []); }
   });
 
   // ---------- Arranque ----------
@@ -814,7 +980,7 @@
     viewer = new M.Viewer($('pano'), { controls: { mouseViewMode: 'drag' } });
     keepTextures();
     makeLayer();
-    if (qs.has('debug')) window.__r360 = { viewer: viewer, layer: function () { return layer; }, current: function () { return current; } };   // solo para pruebas
+    if (qs.has('debug')) window.__r360 = { viewer: viewer, layer: function () { return layer; }, current: function () { return current; }, scene: function (id) { return scenes[id]; }, setVariant: function (i) { setVariant(sceneData(current), i); }, goTo: function (id, h) { goTo(id, h ? { hotspot: h } : {}); }, data: sceneData };   // solo para pruebas
     autorotate = M.autorotate({ yawSpeed: tour.settings.autorotateSpeed || 0.03, targetPitch: 0, targetFov: R.effectiveFov(tour, null) });
     renderTools();
     if (isMobile()) setPanel(false);
@@ -840,6 +1006,8 @@
       var more = [];
       tour.scenes.forEach(function (s) { if (s.kind === 'image') more.push(base + s.image); });
       if (!PHONE) tour.scenes.forEach(function (s) { if (s.kind !== 'image') for (var z = displayLevel(s) + 1; z < s.levels.length; z++) more = more.concat(levelUrls(s, z)); });
+      // Las otras imágenes de los puntos de variación, por si el cliente las pide.
+      tour.scenes.forEach(function (s) { var vh = s.kind !== 'image' && R.variantOf(s); if (vh) vh.options.forEach(function (o) { if (!o.base) more = more.concat(panoUrls(R.optionScene(s, o))); }); });
       preload(more);
     });
     Promise.race([all, new Promise(function (r) { setTimeout(r, LOADER_MAX); })]).then(function () {

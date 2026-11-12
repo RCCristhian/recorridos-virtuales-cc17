@@ -79,6 +79,95 @@
     return viewer.createScene({ source: source, geometry: geometry, view: view, pinFirstLevel: true, textureStoreOpts: opts && opts.textureStoreOpts });
   }
 
+  // ---------- Punto de variación ----------
+  // Un 360 puede tener otras imágenes de la misma cámara (por ejemplo el mueble en otro color).
+  // Van en un punto { type: 'variant', options: [{ id, name, tileDir, faceSize, levels }] }; la
+  // primera opción (base: true) es la imagen propia de la escena. Todo es opcional: sin este punto
+  // la escena funciona igual que antes.
+  function variantOf(s) {
+    var l = s && s.hotspots || [];
+    for (var i = 0; i < l.length; i++) if (l[i].type === 'variant' && (l[i].options || []).length > 1) return l[i];
+    return null;
+  }
+  // Una vista puede tener varios puntos de variación (por ejemplo la cocina y unas mamparas).
+  function variantsOf(s) {
+    return (s && s.hotspots || []).filter(function (h) { return h.type === 'variant' && (h.options || []).length > 1; });
+  }
+  // Imagen que corresponde a lo elegido en cada punto. sel = { idPunto: idOpción }; last = el último
+  // punto que se cambió. Con una sola opción distinta de la original se usa su render; con dos o más
+  // se busca la combinación (s.combos: [{ id, sel, tileDir, … }]) y, si no hay render para esa mezcla,
+  // se ve el render del último punto que se tocó.
+  function resolveVariant(s, sel, last) {
+    var picked = [];
+    variantsOf(s).forEach(function (h) {
+      var id = sel && sel[h.id];
+      for (var i = 0; id && i < h.options.length; i++) if (h.options[i].id === id && !h.options[i].base) { picked.push({ h: h, o: h.options[i] }); break; }
+    });
+    if (!picked.length) return s;
+    if (picked.length === 1) return optionScene(s, picked[0].o);
+    var c = comboFor(s, picked);
+    if (c) return optionScene(s, c);
+    var p = picked.filter(function (x) { return x.h.id === last; })[0] || picked[picked.length - 1];
+    return optionScene(s, p.o);
+  }
+  // Combinación guardada para esas opciones (lista de { h, o }), o null.
+  function comboFor(s, picked) {
+    var l = s && s.combos || [];
+    for (var i = 0; i < l.length; i++) {
+      var c = l[i], keys = Object.keys(c.sel || {});
+      if (!c.tileDir || keys.length !== picked.length) continue;
+      if (picked.every(function (x) { return c.sel[x.h.id] === x.o.id; })) return c;
+    }
+    return null;
+  }
+  // Variaciones ligadas: los puntos con el mismo grupo (h.link) comparten la opción elegida,
+  // reconocida por su nombre. Se comparan sin mayúsculas, tildes ni espacios de más.
+  function linkKey(t) {
+    return String(t || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/\s+/g, ' ').trim();
+  }
+  function optionName(o, i) { return (o && o.name) || (i ? 'Variante ' + (i + 1) : 'Original'); }
+  // La escena vista con la imagen de una opción (mismos datos, otra carpeta de mosaicos).
+  function optionScene(s, o) {
+    if (!o || o.base) return s;
+    return Object.assign({}, s, { id: s.id + '~' + o.id, tileDir: o.tileDir, faceSize: o.faceSize || s.faceSize, levels: o.levels || s.levels });
+  }
+  // Capa extra en la MISMA escena: comparte la vista, así dirección y zoom son exactamente los mismos.
+  function createVariantLayer(scene, base, ps, opts) {
+    var source = M.ImageUrlSource.fromString(base + tileDir(ps) + '/{z}/{f}/{y}/{x}.jpg', { cubeMapPreviewUrl: base + tileDir(ps) + '/preview.jpg' });
+    var l = scene.createLayer({ source: source, geometry: new M.CubeGeometry(ps.levels), pinFirstLevel: true, textureStoreOpts: opts && opts.textureStoreOpts });
+    l.__ps = ps;
+    return l;
+  }
+  // Zonas de un punto de variación (puede haber varias: por ejemplo la cocina y la isla).
+  // Proyectos antiguos guardan una sola en h.zone; los nuevos, una lista en h.zones.
+  function zonesOf(h) {
+    var l = h && (h.zones || (h.zone ? [h.zone] : [])) || [];
+    return l.filter(function (z) { return z && z.length >= 3; });
+  }
+  // Zona de la variación en pantalla: los bordes se reparten en tramos (en la esfera son arcos).
+  function zoneScreen(view, zone) {
+    var out = [], n = zone ? zone.length : 0;
+    if (n < 3) return null;
+    function vec(p) { return [Math.sin(p.yaw) * Math.cos(p.pitch), -Math.sin(p.pitch), Math.cos(p.yaw) * Math.cos(p.pitch)]; }
+    for (var i = 0; i < n; i++) {
+      var a = vec(zone[i]), b = vec(zone[(i + 1) % n]);
+      for (var k = 0; k < 12; k++) {
+        var t = k / 12, v = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+        var c = view.coordinatesToScreen({ yaw: Math.atan2(v[0], v[2]), pitch: -Math.atan2(v[1], Math.sqrt(v[0] * v[0] + v[2] * v[2])) });
+        if (c) out.push(c);
+      }
+    }
+    return out.length >= 3 ? out : null;
+  }
+  function inPoly(pts, x, y) {
+    var inside = false;
+    for (var i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+      var a = pts[i], b = pts[j];
+      if ((a.y > y) !== (b.y > y) && x < (b.x - a.x) * (y - a.y) / (b.y - a.y) + a.x) inside = !inside;
+    }
+    return inside;
+  }
+
   // Las sombras van dibujadas dentro del SVG (trazo oscuro debajo): sin filtros CSS,
   // que obligan a redibujar el punto en cada cuadro al girar la vista.
   var CHEV = '<svg viewBox="0 0 24 12" aria-hidden="true"><path d="M3 10l9-7 9 7" fill="none" stroke="rgba(0,0,0,.35)" stroke-width="4.6" stroke-linecap="round" stroke-linejoin="round"/>' +
@@ -95,7 +184,13 @@
     { id: 'suelo', name: 'En el suelo', arrows: true },
     { id: 'flechas', name: 'Solo flechas', arrows: true },
     { id: 'puerta', name: 'Puerta', arrows: false },
+    { id: 'anillo', name: 'Solo círculo', arrows: false },
+    { id: 'punto', name: 'Círculo con punto', arrows: false },
+    { id: 'anillo-suelo', name: 'Círculo en el suelo', arrows: false },
+    { id: 'punto-suelo', name: 'Punto en el suelo', arrows: false },
   ];
+  // Estilos que van acostados en el suelo (con la inclinación automática).
+  function onFloor(style) { return style === 'suelo' || style === 'anillo-suelo' || style === 'punto-suelo'; }
   // Cómo salen los saltos nuevos si el usuario no eligió otra cosa.
   var LINK_DEFAULTS = { style: 'suelo', arrows: 1, size: 1, color: null, animate: true };
   // ¿El salto lleva una flecha que se puede girar libremente? (no va pegado a una superficie)
@@ -113,6 +208,8 @@
   function linkInner(style, arrows) {
     if (style === 'flechas') return chevrons(arrows);
     if (style === 'puerta') return PULSE + '<span class="r360-ring"></span>' + DOOR;
+    if (style === 'anillo' || style === 'anillo-suelo') return PULSE + '<span class="r360-ring"></span>';
+    if (style === 'punto' || style === 'punto-suelo') return PULSE + '<span class="r360-ring"></span><span class="r360-dot"></span>';
     return PULSE + '<span class="r360-ring"></span>' + chevrons(arrows);   // circulo y suelo
   }
 
@@ -134,11 +231,11 @@
   }
 
   // ¿El punto va "pegado" a una superficie (suelo/pared) en perspectiva?
-  function isFlat(h) { return (h.type === 'link' && h.style === 'suelo') || !!h.flat; }
+  function isFlat(h) { return (h.type === 'link' && onFloor(h.style)) || !!h.flat; }
 
   // Inclinación automática para que quede acostado sobre el suelo: 90° − ángulo bajo el horizonte.
   function autoTilt(h) {
-    if (h.style !== 'suelo') return 0;
+    if (!onFloor(h.style)) return 0;
     var below = Math.max(0, h.pitch * 180 / Math.PI);
     return Math.max(0, Math.min(85, 90 - below));
   }
@@ -256,6 +353,7 @@
     logoY: 0,
     menuActive: null,       // color del elemento activo del menú (null = acento)
     hotspotHover: null,     // color de los puntos al pasar el mouse (null = acento)
+    hotspotColor: null,     // color base de todos los puntos (null = blanco); un salto puede tener el suyo
     menuHover: '#ffffff',   // sombreado al pasar el mouse por el menú
     menuHoverOpacity: 0.08,
     toggleBg: '#111111',    // botón redondo que abre / cierra el menú
@@ -292,9 +390,14 @@
     document.head.appendChild(l);
   }
 
+  // Nombre que ve el cliente: el «nombre en el menú» si se puso, si no el nombre de la escena.
+  function sceneTitle(s) { return s ? (String(s.menuName || '').trim() || s.name || '') : ''; }
+
   window.R360 = {
+    sceneTitle: sceneTitle,
     FONTS: FONTS, DEFAULT_THEME: DEFAULT_THEME, theme: theme, rgba: rgba, fontStack: fontStack, loadFont: loadFont,
     esc: esc, createScene: createScene, tileDir: tileDir, hotspotEl: hotspotEl, addHotspot: addHotspot, isFlat: isFlat, autoTilt: autoTilt,
-    LINK_STYLES: LINK_STYLES, LINK_DEFAULTS: LINK_DEFAULTS, hasArrowAngle: hasArrowAngle, panoLimiter: panoLimiter, panoGestures: panoGestures, safariPinch: safariPinch, wheelFactor: wheelFactor, stopPanoEvents: stopPanoEvents, zoomPan: zoomPan, DEFAULT_VIEW: DEFAULT_VIEW,
+    LINK_STYLES: LINK_STYLES, LINK_DEFAULTS: LINK_DEFAULTS, onFloor: onFloor, hasArrowAngle: hasArrowAngle, panoLimiter: panoLimiter, panoGestures: panoGestures, safariPinch: safariPinch, wheelFactor: wheelFactor, stopPanoEvents: stopPanoEvents, zoomPan: zoomPan, DEFAULT_VIEW: DEFAULT_VIEW,
+    variantOf: variantOf, variantsOf: variantsOf, resolveVariant: resolveVariant, comboFor: comboFor, optionScene: optionScene, linkKey: linkKey, optionName: optionName, createVariantLayer: createVariantLayer, zoneScreen: zoneScreen, zonesOf: zonesOf, inPoly: inPoly,
   };
 })();

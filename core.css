@@ -52,7 +52,8 @@
 .r360-s-flechas .r360-chevs { width: 74%; }
 
 /* En el suelo: más grande (se ve acostado en perspectiva) */
-.r360-s-suelo { --hs: calc(120px * var(--k)); --stroke: calc(6px * var(--k)); }
+.r360-s-suelo, .r360-s-anillo-suelo, .r360-s-punto-suelo { --hs: calc(120px * var(--k)); --stroke: calc(6px * var(--k)); }
+.r360-dot { position: absolute; width: 30%; height: 30%; border-radius: 50%; background: currentColor; box-shadow: 0 0 0 1px rgba(0,0,0,0.15); }
 
 /* Puerta sutil: marco de línea + hoja que se abre */
 .r360-door { position: relative; width: 34%; height: 50%; perspective: calc(120px * var(--k)); }
