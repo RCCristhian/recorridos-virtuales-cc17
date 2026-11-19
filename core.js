@@ -15,6 +15,16 @@
   // no respondía y el viaje entre panoramas terminaba con un salto brusco. Aquí se cuenta en
   // píxeles de pantalla normales, igual en todos los equipos, y siempre queda margen para acercarse.
   var MIN_ZOOM_FOV = 60 * Math.PI / 180;
+  // Cuánto se puede alejar la vista. Sin ajuste (proyectos de antes) se limita a 110° de alto y de
+  // ancho, como siempre; en pantalla completa ancha el tope de ancho recortaba el alejamiento. Con
+  // «Alejamiento máximo» (tour.settings.maxFov, en grados) manda el alto y el ancho llega hasta 150°.
+  var DEG = Math.PI / 180, FOV_MAX = { v: 110 * DEG, h: 110 * DEG };
+  function fovLimits(tour) {
+    var m = tour && tour.settings && +tour.settings.maxFov;
+    return m > 0 ? { v: m * DEG, h: Math.max(m, 150) * DEG } : { v: 110 * DEG, h: 110 * DEG };
+  }
+  function setFovLimits(tour) { FOV_MAX = fovLimits(tour); return FOV_MAX; }
+  function sceneLimiter(faceSize) { return panoLimiter(faceSize, FOV_MAX.v, FOV_MAX.h); }
   function panoLimiter(faceSize, maxVFov, maxHFov) {
     var L = M.RectilinearView.limit;
     var range = M.util.compose(L.vfov(0, maxVFov), L.hfov(0, maxHFov != null ? maxHFov : maxVFov), L.pitch(-Math.PI / 2, Math.PI / 2));
@@ -66,15 +76,19 @@
   // Carpeta de los mosaicos de un panorama. Al reemplazar su imagen se usa una carpeta nueva
   // (s.tileDir); los proyectos de antes usan la del id de la escena.
   function tileDir(s) { return 'tiles/' + (s.tileDir || s.id); }
+  // Formato de los mosaicos: JPG en el editor; WebP en lo exportado con esa opción (tour.exported.tiles).
+  var TILE_EXT = 'jpg';
+  function setTileExt(e) { TILE_EXT = e === 'webp' ? 'webp' : 'jpg'; }
+  function tileExt() { return TILE_EXT; }
 
   function createScene(viewer, base, s, opts) {
     var v = s.initialView || DEFAULT_VIEW;
     var source = M.ImageUrlSource.fromString(
-      base + tileDir(s) + '/{z}/{f}/{y}/{x}.jpg',
-      { cubeMapPreviewUrl: base + tileDir(s) + '/preview.jpg' }
+      base + tileDir(s) + '/{z}/{f}/{y}/{x}.' + TILE_EXT,
+      { cubeMapPreviewUrl: base + tileDir(s) + '/preview.' + TILE_EXT }
     );
     var geometry = new M.CubeGeometry(s.levels);
-    var limiter = panoLimiter(s.faceSize, 110 * Math.PI / 180);
+    var limiter = sceneLimiter(s.faceSize);
     var view = new M.RectilinearView({ yaw: v.yaw, pitch: v.pitch, fov: v.fov }, limiter);
     return viewer.createScene({ source: source, geometry: geometry, view: view, pinFirstLevel: true, textureStoreOpts: opts && opts.textureStoreOpts });
   }
@@ -133,7 +147,7 @@
   }
   // Capa extra en la MISMA escena: comparte la vista, así dirección y zoom son exactamente los mismos.
   function createVariantLayer(scene, base, ps, opts) {
-    var source = M.ImageUrlSource.fromString(base + tileDir(ps) + '/{z}/{f}/{y}/{x}.jpg', { cubeMapPreviewUrl: base + tileDir(ps) + '/preview.jpg' });
+    var source = M.ImageUrlSource.fromString(base + tileDir(ps) + '/{z}/{f}/{y}/{x}.' + TILE_EXT, { cubeMapPreviewUrl: base + tileDir(ps) + '/preview.' + TILE_EXT });
     var l = scene.createLayer({ source: source, geometry: new M.CubeGeometry(ps.levels), pinFirstLevel: true, textureStoreOpts: opts && opts.textureStoreOpts });
     l.__ps = ps;
     return l;
@@ -341,9 +355,11 @@
     panelWidth: 290,
     panelBg: '#1c1d1a',
     panelOpacity: 0.92,
+    panelBlur: 10,          // desenfoque de lo que se ve detrás del menú (px); 0 = sin desenfoque
     textColor: '#f0eee8',
     accent: '#b5122c',
     menuSize: 13,
+    menuGap: 10,            // aire arriba y abajo de cada opción del menú (px): la separación vertical entre opciones
     uppercase: true,
     buttonBg: '#f0eee8',
     buttonColor: '#1c1d1a',
@@ -358,11 +374,24 @@
     menuHoverOpacity: 0.08,
     toggleBg: '#111111',    // botón redondo que abre / cierra el menú
     toggleColor: '#ffffff',
+    toggleBgOpacity: 1,     // opacidad del fondo del botón (0 = transparente)
+    toggleIcon: 'circulo',  // 'circulo' (flecha dentro de un círculo) o 'flecha' (solo la flecha)
+    toggleSize: 100,        // tamaño del botón (%), 100 = el de siempre
+    toggleX: 0,             // mover el botón a los lados (px)
+    toggleY: 0,             // subir (−) o bajar (+) el botón (px); 0 = centrado en la altura
     menuActiveBg: '#ffffff',  // fondo del elemento activo del menú
     menuActiveBgOpacity: 0,  // 0 = sin fondo
     backPos: 'top',         // botón Volver: 'top' (arriba de la lista) o 'bottom' (abajo)
     backX: 0,
     backY: 0,
+    backCase: 'menu',       // letras de «Volver»: 'menu' (como el menú), 'upper' (MAYÚSCULAS) o 'normal'
+    backStyle: 'texto',     // Volver: 'texto' (sencillo), 'acento' (destacado), 'borde' (con borde) o 'relleno'
+    backColor: null,        // null = color de acento
+    menuLines: 'todas',     // líneas entre opciones del menú: 'todas', 'sub' (sin líneas dentro de las carpetas) o 'ninguna'
+    titleStyle: 'texto',    // subtítulo del submenú: 'texto' (sencillo), 'grande', 'acento' (con línea) o 'franja'
+    titleColor: null,       // null = el de cada estilo
+    titleSize: null,        // null = el de cada estilo
+    titleLine: null,        // color de la línea (Con línea) o de la franja (Con franja); null = acento
   };
   function theme(tour) {
     var t = {}, src = tour.theme || {};
@@ -397,7 +426,7 @@
     sceneTitle: sceneTitle,
     FONTS: FONTS, DEFAULT_THEME: DEFAULT_THEME, theme: theme, rgba: rgba, fontStack: fontStack, loadFont: loadFont,
     esc: esc, createScene: createScene, tileDir: tileDir, hotspotEl: hotspotEl, addHotspot: addHotspot, isFlat: isFlat, autoTilt: autoTilt,
-    LINK_STYLES: LINK_STYLES, LINK_DEFAULTS: LINK_DEFAULTS, onFloor: onFloor, hasArrowAngle: hasArrowAngle, panoLimiter: panoLimiter, panoGestures: panoGestures, safariPinch: safariPinch, wheelFactor: wheelFactor, stopPanoEvents: stopPanoEvents, zoomPan: zoomPan, DEFAULT_VIEW: DEFAULT_VIEW,
+    LINK_STYLES: LINK_STYLES, LINK_DEFAULTS: LINK_DEFAULTS, onFloor: onFloor, hasArrowAngle: hasArrowAngle, panoLimiter: panoLimiter, sceneLimiter: sceneLimiter, fovLimits: fovLimits, setFovLimits: setFovLimits, setTileExt: setTileExt, tileExt: tileExt, getFovMax: function () { return FOV_MAX; }, panoGestures: panoGestures, safariPinch: safariPinch, wheelFactor: wheelFactor, stopPanoEvents: stopPanoEvents, zoomPan: zoomPan, DEFAULT_VIEW: DEFAULT_VIEW,
     variantOf: variantOf, variantsOf: variantsOf, resolveVariant: resolveVariant, comboFor: comboFor, optionScene: optionScene, linkKey: linkKey, optionName: optionName, createVariantLayer: createVariantLayer, zoneScreen: zoneScreen, zonesOf: zonesOf, inPoly: inPoly,
   };
 })();

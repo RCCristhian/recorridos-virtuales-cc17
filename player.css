@@ -48,7 +48,7 @@ body.is-still #btnAuto, body.is-cover #btnAuto { display: none; }
   display: flex; flex-direction: column;
   padding: calc(36px + var(--sat)) 28px calc(28px + var(--sab));
   background: var(--panel);
-  backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: var(--panel-blur, blur(10px)); -webkit-backdrop-filter: var(--panel-blur, blur(10px));
   transition: transform 0.35s cubic-bezier(.2,.7,.2,1);
   z-index: 10;
 }
@@ -61,8 +61,9 @@ body.panel-closed #panel { transform: translateX(-100%); }
 #menu { position: relative; z-index: 1; flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; justify-content: safe center; margin: 0 -6px; padding: 0 6px; -webkit-overflow-scrolling: touch; }
 #menu ul { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--line); }
 #menu li { border-bottom: 1px solid var(--line); }
+#menu ul.no-lines, #menu ul.no-lines li { border: 0; }
 #menu button {
-  width: 100%; min-height: 44px; padding: 10px 8px; display: flex; align-items: center; gap: 10px;
+  width: 100%; min-height: calc(24px + 2 * var(--menu-pad, 10px)); padding: var(--menu-pad, 10px) 8px; display: flex; align-items: center; gap: 10px;
   background: none; border: 0; text-align: left; cursor: pointer;
   font-size: var(--menu-size); font-weight: 500; letter-spacing: 0.06em; text-transform: var(--menu-case);
   transition: color 0.15s ease, background-color 0.15s ease;
@@ -78,7 +79,24 @@ body.panel-closed #panel { transform: translateX(-100%); }
 #menu .back { color: var(--muted); border: 0; transform: translate(var(--back-x, 0px), var(--back-y, 0px)); }
 #menu .back-bottom { margin-top: 10px; }
 #menu .back svg { width: 16px; height: 16px; }
-#menu .menu-title { margin: 0 0 8px; padding: 0 8px; font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); }
+#menu .back-c-upper { text-transform: uppercase; }
+#menu .back-c-normal { text-transform: none; }
+#menu .menu-title { margin: 0 0 8px; padding: 0 8px; font-size: var(--title-size, 11px); letter-spacing: 0.12em; text-transform: var(--menu-case); color: var(--title-c, var(--muted)); }
+/* Volver más notorio (Diseño → Botón «Volver»). Sencillo es el de siempre. */
+#menu .back-s-acento { color: var(--back-c); font-weight: 700; letter-spacing: 0.1em; }
+#menu .back-s-acento svg { width: 26px; height: 26px; padding: 4px; border: 1.5px solid currentColor; border-radius: 50%; }
+#menu .back-s-acento:hover { background: none; filter: brightness(1.2); }
+#menu .back-s-borde, #menu .back-s-relleno { width: auto; align-self: flex-start; min-height: 38px; padding: 8px 18px 8px 12px; border-radius: 999px; font-weight: 700; letter-spacing: 0.1em; }
+#menu .back-s-borde { color: var(--back-c); border: 1.5px solid var(--back-c); }
+#menu .back-s-borde:hover { background: var(--back-c); color: #fff; }
+#menu .back-s-relleno { color: #fff; background: var(--back-c); }
+#menu .back-s-relleno:hover { background: var(--back-c); filter: brightness(1.15); }
+#menu .back-s-borde.back-top, #menu .back-s-relleno.back-top { margin-bottom: 14px; }
+/* Subtítulo del submenú más notorio */
+#menu .mt-s-grande { font-size: var(--title-size, calc(var(--menu-size) + 5px)); font-weight: 700; letter-spacing: 0.06em; color: var(--title-c, var(--text)); margin-bottom: 12px; }
+#menu .mt-s-acento { font-size: var(--title-size, calc(var(--menu-size) + 2px)); font-weight: 700; letter-spacing: 0.1em; color: var(--title-c, var(--accent)); margin-bottom: 14px; }
+#menu .mt-s-acento::after { content: ""; display: block; width: 28px; height: 2px; margin-top: 8px; background: var(--title-line, var(--accent)); }
+#menu .mt-s-franja { font-size: var(--title-size, calc(var(--menu-size) + 3px)); font-weight: 700; letter-spacing: 0.08em; color: var(--title-c, var(--text)); padding: 9px 10px; margin-bottom: 12px; border-left: 3px solid var(--title-line, var(--accent)); background: var(--title-line-bg, var(--menu-hover)); }
 .panel-foot { display: flex; flex-wrap: wrap; gap: 12px; padding-top: 18px; flex: none; position: relative; }
 .panel-foot::before { content: ""; position: absolute; top: 0; width: 32px; height: 2px; background: var(--text); }
 .tool {
@@ -102,6 +120,15 @@ body.panel-closed #panel { transform: translateX(-100%); }
 
 #panelToggle { position: fixed; top: 50%; left: var(--panel-w); transform: translate(-50%, -50%); z-index: 11; background: var(--toggle-bg); color: var(--toggle-fg); border-color: var(--toggle-fg); transition: left 0.35s cubic-bezier(.2,.7,.2,1), background-color 0.15s ease; }
 body.panel-closed #panelToggle { left: 34px; }
+/* Posición elegida en Diseño (se suma al centrado) */
+#panelToggle { translate: var(--toggle-x, 0px) var(--toggle-y, 0px); width: calc(44px * var(--toggle-s, 1)); height: calc(44px * var(--toggle-s, 1)); }
+#panelToggle svg { width: calc(22px * var(--toggle-s, 1)); height: calc(22px * var(--toggle-s, 1)); }
+/* Fondo transparente: sin desenfoque detrás */
+body.toggle-clear #panelToggle { backdrop-filter: none; -webkit-backdrop-filter: none; }
+/* Solo la flecha: sin círculo ni fondo; al pasar el mouse la flecha toma el color de acento */
+body.toggle-flecha #panelToggle { background: none; border-color: transparent; backdrop-filter: none; -webkit-backdrop-filter: none; }
+body.toggle-flecha #panelToggle:hover { background: none; border-color: transparent; color: var(--accent); }
+body.toggle-flecha #panelToggle svg { width: calc(30px * var(--toggle-s, 1)); height: calc(30px * var(--toggle-s, 1)); }
 body.panel-closed #panelToggle svg { transform: rotate(180deg); }
 /* Menú a la derecha */
 body.panel-right #panel { left: auto; right: 0; }
@@ -116,7 +143,7 @@ body.panel-right #topRight { right: auto; left: calc(20px + env(safe-area-inset-
 #sceneTitle {
   position: fixed; left: 50%; bottom: calc(22px + var(--sab)); transform: translateX(-50%);
   padding: 8px 16px; border-radius: 999px; background: rgba(20,22,26,0.55); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
-  font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase; pointer-events: none; z-index: 5;
+  font-size: 13px; letter-spacing: 0.08em; text-transform: var(--menu-case); pointer-events: none; z-index: 5;
   max-width: calc(100vw - 120px); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 #sceneTitle:empty, body.hide-scene-name #sceneTitle, body.is-cover #sceneTitle { display: none; }
@@ -252,7 +279,7 @@ body.panel-right:not(.panel-closed) #madeby { right: auto; left: calc(12px + env
   .panel-logo img { max-height: 70px !important; }
   .panel-logo h1 { font-size: 22px !important; }
   #menu { justify-content: flex-start; }
-  #menu button { min-height: 48px; }
+  #menu button { min-height: calc(28px + 2 * var(--menu-pad, 10px)); }
   /* En el celular el menú empieza justo bajo el logo: los ajustes verticales del logo y de
      Volver (pensados para el menú centrado del ordenador) lo metían debajo del logo. Aquí solo
      se acepta bajarlos, y se hace ocupando su espacio para que nada se monte. */
@@ -264,7 +291,7 @@ body.panel-right:not(.panel-closed) #madeby { right: auto; left: calc(12px + env
   body:not(.panel-closed) #sceneTitle, body:not(.panel-closed) #madeby { opacity: 0; }
   #topRight { top: calc(14px + var(--sat)); right: calc(14px + env(safe-area-inset-right)); }
   body.panel-right #topRight { left: calc(14px + env(safe-area-inset-left)); }
-  #panelToggle { width: 40px; height: 40px; }
+  #panelToggle { width: calc(40px * var(--toggle-s, 1)); height: calc(40px * var(--toggle-s, 1)); }
   body.panel-closed #panelToggle { left: 30px; }
   body.panel-right.panel-closed #panelToggle { right: 30px; }
   #madeby { font-size: 9.5px; bottom: calc(6px + var(--sab)); right: calc(8px + env(safe-area-inset-right)); }
@@ -286,7 +313,7 @@ body.panel-right:not(.panel-closed) #madeby { right: auto; left: calc(12px + env
   .panel-logo img { max-height: 44px !important; }
   .panel-logo h1 { font-size: 18px !important; }
   #menu { justify-content: flex-start; }
-  #menu button { min-height: 40px; padding: 6px 8px; }
+  #menu button { min-height: calc(20px + 2 * var(--menu-pad, 10px)); padding: calc(var(--menu-pad, 10px) * 0.6) 8px; }
   .panel-logo { transform: translateX(var(--logo-x)); margin-top: max(0px, var(--logo-y)); }
   #menu .back { transform: translateX(var(--back-x, 0px)); }
   #menu .back-top { margin-top: max(0px, var(--back-y, 0px)); margin-bottom: 14px; }

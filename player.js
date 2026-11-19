@@ -45,12 +45,15 @@
   }
   // Descarga imágenes a la caché del navegador, de 6 en 6 y en el orden dado. onProgress(0–1).
   // Se piden igual que las pide Marzipano (crossOrigin), así luego las encuentra en la caché.
-  function preload(urls, onProgress) {
+  // bg = en segundo plano: se pausa mientras la vista que se mira no está nítida (salto en curso).
+  function preload(urls, onProgress, bg) {
     return new Promise(function (resolve) {
-      var i = 0, done = 0, n = urls.length;
+      var i = 0, done = 0, n = urls.length, waited = 0;
       if (!n) return resolve();
       function next() {
         if (i >= n) return;
+        if (bg && waited < 4000 && current && current !== COVER && scenes[current] && !sharpReady(current)) { waited += 150; setTimeout(next, 150); return; }
+        waited = 0;
         var im = new Image();
         im.crossOrigin = 'anonymous';
         im.onload = im.onerror = function () {
@@ -68,12 +71,16 @@
     if (!lv || lv.fallbackOnly) return urls;
     var n = Math.round(lv.size / lv.tileSize);
     ['b', 'd', 'f', 'l', 'r', 'u'].forEach(function (f) {
-      for (var y = 0; y < n; y++) for (var x = 0; x < n; x++) urls.push(base + R.tileDir(s) + '/' + z + '/' + f + '/' + y + '/' + x + '.jpg');
+      for (var y = 0; y < n; y++) for (var x = 0; x < n; x++) urls.push(base + R.tileDir(s) + '/' + z + '/' + f + '/' + y + '/' + x + '.' + R.tileExt());
     });
     return urls;
   }
-  // Lo que necesita un panorama para verse completo en esta pantalla: vista previa + su nivel.
-  function panoUrls(s) { return [base + R.tileDir(s) + '/preview.jpg'].concat(levelUrls(s, displayLevel(s))); }
+  // Base liviana de cada panorama: el primer nivel real, una sola imagen por cara (unos 500 px).
+  // Es lo único que se espera para mostrar una vista (como hace 3DVista); lo nítido llega encima.
+  function baseLevel(s) { for (var i = 0; i < (s.levels || []).length; i++) if (!s.levels[i].fallbackOnly) return i; return 0; }
+  function panoUrls(s) { return [base + R.tileDir(s) + '/preview.' + R.tileExt()].concat(levelUrls(s, baseLevel(s))); }
+  // Nivel nítido para esta pantalla (se baja en segundo plano).
+  function fullUrls(s) { return levelUrls(s, displayLevel(s)); }
 
   // ---------- Nivel de detalle por pantalla ----------
   // Marzipano pide los cuadros nítidos según hacia dónde se mira y los dibuja según llegan: al girar,
@@ -85,7 +92,7 @@
   var PHONE_FACE = 1000;                    // en celular: más nítido casi no se nota y gasta mucha memoria
   var levelIdx = {};
   function baseFov(s) {
-    var p = $('pano'), lim = R.panoLimiter(s.faceSize, 110 * Math.PI / 180);
+    var p = $('pano'), lim = R.sceneLimiter(s.faceSize);
     return lim({ yaw: 0, pitch: 0, roll: 0, fov: R.effectiveFov(tour, s), width: p.clientWidth, height: p.clientHeight }).fov;
   }
   function displayLevel(s) {
@@ -118,10 +125,13 @@
   function layerReady(l, ps) {
     var geo = l.geometry(), st = l.textureStore();
     if (!st) return false;
-    var tiles = geo.levelTiles(geo.levelList[displayLevel(ps)]);
+    var tiles = geo.levelTiles(geo.levelList[baseLevel(ps)]);
     for (var i = 0; i < tiles.length; i++) if (!st.texture(tiles[i])) return false;
     return true;
   }
+  // Marzipano avisa en cada cuadro si todo lo que se ve ya está con su nivel nítido.
+  function watchStable(l) { l.__stable = false; l.addEventListener('renderComplete', function (st) { l.__stable = !!st; }); return l; }
+  function sharpReady(id) { var sc = scenes[id]; return !!sc && sc.listLayers().every(function (l) { return l.__stable; }); }
   function levelReady(id) {
     var sc = scenes[id];
     if (!sc) return false;
@@ -149,14 +159,32 @@
   function neighbors(s) {
     return (s.hotspots || []).filter(function (h) { return h.type === 'link'; }).map(function (h) { return h.target; });
   }
-  function settle(s) { keepResident([s.id].concat(neighbors(s))); }
+  var basePins = [], BASE_MAX = PHONE ? 4 : 20;
+  function pinBase(id, l, s) {
+    if (basePins.indexOf(id) < 0) l.pinLevel(baseLevel(s));
+    basePins = [id].concat(basePins.filter(function (b) { return b !== id; }));
+    while (basePins.length > BASE_MAX) {
+      var old = basePins.pop(), osc = scenes[old];
+      if (old === current || !osc) continue;
+      osc.layer().unpinLevel(baseLevel(sceneData(old)));
+      if (viewer.stage().listLayers().indexOf(osc.layer()) < 0 && osc.layer().textureStore()) osc.layer().textureStore().clearNotPinned();
+    }
+  }
+  function settle(s) {
+    neighbors(s).forEach(function (id) { var n = sceneData(id); if (n && n.kind !== 'image') { var sc = getScene(id); pinBase(id, sc.layer(), n); } });
+    pinBase(s.id, getScene(s.id).layer(), s);
+    // Con un respiro, para que primero llegue lo que el cliente está mirando: el resto de la vista nítida.
+    setTimeout(function () { if (current === s.id || current === COVER) keepResident([s.id]); }, 1200);
+  }
 
   // ---------- Panoramas ----------
   function getScene(id) {
     if (!scenes[id]) {
       var s = sceneData(id), sc = R.createScene(viewer, base, s, { textureStoreOpts: { previouslyVisibleCacheSize: TILE_CACHE } });
       sc.__id = id;
+      watchStable(sc.layer());
       sc.layer().setFixedLevel(displayLevel(s));
+      pinBase(id, sc.layer(), s);
       sc.view().addEventListener('change', function () { applyLevel(sc, s); });
       scenes[id] = sc;
     }
@@ -205,11 +233,15 @@
   // mientras tanto queda invisible y se sigue viendo la anterior, así no se ven cuadros a medio cargar.
   var HOLD_MAX = 2500;
   // Llama a cb cuando la escena tiene su nivel completo preparado (para que al girar no falte nada).
+  var SHARP_WAIT = 900;
   function onReady(sc, max, cb) {
-    var done = false, t0 = performance.now();
+    var done = false, t0 = performance.now(), baseAt = null;
+    sc.listLayers().forEach(function (l) { l.__stable = false; });
     (function check() {
       if (done) return;
-      if (levelReady(sc.__id) || performance.now() - t0 >= max) { done = true; cb(); return; }
+      var now = performance.now();
+      if (baseAt === null && levelReady(sc.__id)) baseAt = now;
+      if ((baseAt !== null && (sharpReady(sc.__id) || now - baseAt >= SHARP_WAIT)) || now - t0 >= max) { done = true; cb(); return; }
       setTimeout(check, 30);
     })();
   }
@@ -330,8 +362,8 @@
       before.forEach(function (b) { dropLayer(sc, b); });
       if (!o.base) {
         var ips = R.optionScene(s, o), ilv = displayLevel(ips);
-        var il = R.createVariantLayer(sc, base, ips, { textureStoreOpts: { previouslyVisibleCacheSize: TILE_CACHE } });
-        il.pinLevel(ilv); il.setFixedLevel(ilv);
+        var il = watchStable(R.createVariantLayer(sc, base, ips, { textureStoreOpts: { previouslyVisibleCacheSize: TILE_CACHE } }));
+        il.pinLevel(baseLevel(ips)); il.setFixedLevel(ilv);
       }
       return;
     }
@@ -343,15 +375,15 @@
       return;
     }
     var ps = R.optionScene(s, o), lv = displayLevel(ps);
-    var l = R.createVariantLayer(sc, base, ps, { textureStoreOpts: { previouslyVisibleCacheSize: TILE_CACHE } });
+    var l = watchStable(R.createVariantLayer(sc, base, ps, { textureStoreOpts: { previouslyVisibleCacheSize: TILE_CACHE } }));
     l.mergeEffects({ opacity: 0 });
-    l.pinLevel(lv);
+    l.pinLevel(baseLevel(ps));
     l.setFixedLevel(lv);
     applyLevel(sc, s);
     var t0 = performance.now(), slow = false;
     (function wait() {
       if (seq !== varSeq || sc.listLayers().indexOf(l) < 0) { if (seq !== varSeq) dropLayer(sc, l); return; }
-      if (!layerReady(l, ps) && performance.now() - t0 < 4000) {
+      if (!(layerReady(l, ps) && l.__stable) && performance.now() - t0 < 4000) {
         if (!slow && performance.now() - t0 > 250) { slow = true; setBar(0.2); }
         return setTimeout(wait, 30);
       }
@@ -364,8 +396,8 @@
   function preloadVariants(s) {
     var h = R.variantOf(s); if (!h) return;
     var urls = [];
-    h.options.forEach(function (o) { if (!o.base) urls = urls.concat(panoUrls(R.optionScene(s, o))); });
-    setTimeout(function () { preload(urls); }, 400);
+    h.options.forEach(function (o) { if (!o.base) { var ps = R.optionScene(s, o); urls = urls.concat(panoUrls(ps), fullUrls(ps)); } });
+    setTimeout(function () { preload(urls, null, true); }, 400);
   }
   // Si el editor cambió las variantes, la escena vuelve a su imagen si la elegida ya no existe.
   function checkVariant(s) {
@@ -420,59 +452,394 @@
     R.safariPinch(document, function () {}, function () {});
   }
 
-  // Viaje entre dos 360 por un salto: UN solo movimiento continuo, sin pausas.
-  //  - el origen se acerca (arranca suave y nunca se detiene) en la dirección en la que se mira;
-  //  - en cuanto el destino está cargado empieza el fundido, mientras el origen sigue avanzando;
-  //  - el destino aparece un poco más abierto y se termina de acercar frenando suave (sigue el avance).
+  // Viaje entre dos 360 por un salto, como lo hace 3DVista:
+  //  - se avanza HACIA EL PUNTO del salto (la imagen se agranda desde ese punto, no desde el centro),
+  //    sin girar la cámara;
+  //  - el destino aparece más lejos desde ese mismo punto y llega a su sitio mientras se funde;
+  //  - al llegar se mira en la misma dirección del mundo: si el destino tiene un salto de vuelta, su
+  //    posición dice cómo está girado ese 360 respecto del anterior (lo que 3DVista llama backwardYaw).
   function easeOutCubic(u) { return 1 - Math.pow(1 - u, 3); }
+  function wrapAngle(a) { return Math.atan2(Math.sin(a), Math.cos(a)); }
+  // ---- Giro real entre dos 360, medido en las imágenes ----
+  // Los renders de un mismo proyecto pueden tener la cámara girada distinto (90°, 45°…). En un interior
+  // las líneas del piso (tablones, bordes de muros) siguen los ejes del cuarto: midiendo su ángulo en la
+  // cara del piso se sabe cómo está girado cada 360 (módulo 90°). Los puntos de ida y vuelta solo dicen
+  // en qué cuarto de vuelta está (no son exactos: los aros están en el suelo, no en la línea entre cámaras).
+  var roomAxes = {};
+  function roomAxis(s) {
+    if (roomAxes[s.id]) return roomAxes[s.id];
+    var z = baseLevel(s);
+    roomAxes[s.id] = new Promise(function (resolve) {
+      var im = new Image();
+      im.crossOrigin = 'anonymous';
+      im.onload = function () {
+        try {
+          var N = 256, c = document.createElement('canvas'); c.width = c.height = N;
+          var x = c.getContext('2d'); x.drawImage(im, 0, 0, N, N);
+          var d = x.getImageData(0, 0, N, N).data, g = new Float32Array(N * N), i;
+          for (i = 0; i < N * N; i++) g[i] = 0.299 * d[i * 4] + 0.587 * d[i * 4 + 1] + 0.114 * d[i * 4 + 2];
+          var C = 0, S = 0, W = 0;
+          for (var yy = 1; yy < N - 1; yy++) for (var xx = 1; xx < N - 1; xx++) {
+            var rx = (xx - N / 2) / (N / 2), ry = (yy - N / 2) / (N / 2);
+            if (rx * rx + ry * ry > 0.7) continue;        // el centro: el piso, sin los muros de los bordes
+            i = yy * N + xx;
+            var gx = g[i + 1 - N] + 2 * g[i + 1] + g[i + 1 + N] - g[i - 1 - N] - 2 * g[i - 1] - g[i - 1 + N];
+            var gy = g[i + N - 1] + 2 * g[i + N] + g[i + N + 1] - g[i - N - 1] - 2 * g[i - N] - g[i - N + 1];
+            var m = gx * gx + gy * gy; if (m < 400) continue;
+            var a = Math.atan2(gy, gx); C += m * Math.cos(4 * a); S += m * Math.sin(4 * a); W += m;
+          }
+          // Cara del piso: el ángulo en la imagen φ corresponde al yaw ψ = φ + 90° (ver FACES en tiler-worker).
+          resolve(W ? { psi: Math.atan2(S, C) / 4 + Math.PI / 2, conf: Math.hypot(C, S) / W } : null);
+        } catch (err) { resolve(null); }
+      };
+      im.onerror = function () { resolve(null); };
+      im.src = base + R.tileDir(s) + '/' + z + '/d/0/0.' + R.tileExt();
+    });
+    return roomAxes[s.id];
+  }
+  // Giro al pasar de A a B: el de los puntos (t0) llevado al valor exacto que dan los pisos (módulo 90°).
+  function refineTurn(a, b, t0) {
+    var A = a && a.conf > 0.35 ? a : null, B = b && b.conf > 0.35 ? b : null;
+    if (!A || !B) return t0;
+    var q = Math.PI / 2, d = B.psi - A.psi, k = Math.round((t0 - d) / q);
+    return wrapAngle(d + k * q);
+  }
+  // Agranda (s > 1) o achica (s < 1) las capas de una escena alrededor de un punto de la pantalla.
+  function scaleLayers(sc, sx, ax, ay) {
+    var rect = sx === 1 ? null : { relativeX: ax * (1 - sx), relativeY: ay * (1 - sx), relativeWidth: sx, relativeHeight: sx };
+    sc.listLayers().forEach(function (l) { l.mergeEffects({ rect: rect }); });
+  }
   function travel(s, h, prev) {
+    // Avance 3D real (la cámara se traslada dentro de la esfera), salvo que la vista pida mirar siempre
+    // a su vista inicial o no haya WebGL: entonces el salto de antes.
+    if (!(h.keepView || s.arriveFixed) && warpGL()) return travel3D(s, h, prev);
+    travelFlat(s, h, prev);
+  }
+  function travelFlat(s, h, prev) {
     var seq = ++navSeq, my = ++loadSeq;
     travelSeq = seq;
     var from = scenes[current], pv = from.view();
-    // Mientras dura el salto cada escena conserva su nivel completo: el origen se acerca con lo que
-    // ya tiene y el destino se prepara entero (si era vecina, ya lo está y no hay espera).
-    var fromLayer = from.layer();
-    keepResident([s.id, prev.id]);
-    var f0 = pv.fov(), y0 = pv.yaw(), p0 = pv.pitch();
+    keepResident([prev.id]);
+    var y0 = pv.yaw(), p0 = pv.pitch();
     var dest = getScene(s.id), target = R.effectiveFov(tour, s);
+    pinBase(s.id, dest.layer(), s);
     syncLinked(s);
-    var start;
-    // El destino entra un poco más abierto y se sigue cerrando: el avance continúa en la misma dirección.
-    // Marzipano limita el campo de visión horizontal (110°); en pantallas anchas eso recortaba la
-    // apertura inicial y el movimiento parecía frenarse. Durante el viaje se relaja ese límite.
     var dv = dest.view(), normalLimiter = dv.limiter();
     var fixed = h.keepView || s.arriveFixed;           // el panorama destino pide mirar siempre a su vista inicial
-    var yawTo = fixed ? (s.initialView || R.DEFAULT_VIEW).yaw : y0;
-    var pitchTo = fixed ? (s.initialView || R.DEFAULT_VIEW).pitch : p0 * 0.5;
-    // Zoom real en esta pantalla: el que dejará el límite normal al terminar, para que el final no dé un salto.
+    // Giro entre los dos 360: con el salto de vuelta se sabe dónde queda el origen visto desde el destino.
+    var back = (s.hotspots || []).find(function (x) { return x.type === 'link' && x.target === prev.id; });
+    var turn = back && h.yaw != null && back.yaw != null ? back.yaw + Math.PI - h.yaw : 0;
+    var axes = null;
+    if (!(h.keepView || s.arriveFixed)) Promise.all([roomAxis(prev), roomAxis(s)]).then(function (r) { axes = r; });
+    else axes = [];
+    var yawTo = fixed ? (s.initialView || R.DEFAULT_VIEW).yaw : wrapAngle(y0 + turn);
+    var pitchTo = fixed ? (s.initialView || R.DEFAULT_VIEW).pitch : p0;
     var pano = $('pano');
     target = normalLimiter({ yaw: yawTo, pitch: pitchTo, roll: 0, fov: target, width: pano.clientWidth, height: pano.clientHeight }).fov;
     dv.setParameters({ yaw: yawTo, pitch: pitchTo, fov: target });
-    dv.setLimiter(R.panoLimiter(s.faceSize, 130 * Math.PI / 180, 170 * Math.PI / 180));
-    start = { yaw: yawTo, pitch: pitchTo, fov: Math.min(target * 1.22, 2.1) };
-    var FADE = Math.max(500, tour.settings.transition != null ? tour.settings.transition : 900);
-    var ready = false, switched = false, fadeAt = null, t0 = performance.now();
+    // Punto hacia el que se avanza: la dirección del salto a la altura del horizonte (como 3DVista, que
+    // avanza en horizontal aunque el punto esté en el suelo). Si no se ve en pantalla, el centro.
+    var ax = 0.5, ay = 0.5;
+    try {
+      var sp = pv.coordinatesToScreen({ yaw: h.yaw, pitch: 0 });
+      if (sp && isFinite(sp.x) && isFinite(sp.y)) { ax = Math.min(0.85, Math.max(0.15, sp.x / pano.clientWidth)); ay = Math.min(0.85, Math.max(0.15, sp.y / pano.clientHeight)); }
+    } catch (err) { /* centro */ }
+    if (fixed) { ax = 0.5; ay = 0.5; }
+    // ---- Avance como 3DVista (medido en ray-b.com/demo) ----
+    // Un solo avance s de 0 a 1 con velocidad triangular (acelera la primera mitad y frena la segunda).
+    // La cámara está en el punto s del camino: el origen se ve G^s… más grande y el destino lo mismo pero
+    // desde «atrás», así en cada instante los dos muestran el punto de avance del mismo tamaño (no hay
+    // tirón al mezclarse). La mezcla va del 25 % al 75 % del avance. Si el destino no está listo al 25 %,
+    // el avance espera ahí (como 3DVista) hasta que lo esté.
+    // 3DVista avanza en ≈ 750 ms; la duración de General (0,9 s por defecto) lo ajusta en proporción.
+    var D = Math.max(350, Math.round(750 * (tour.settings.transition != null ? tour.settings.transition : 900) / 900));
+    var G = 1.8;                                        // cuánto más cerca se ve el fondo desde el destino
+    var ready = false, onStage = false, pt = 0, last = null, t0 = performance.now(), waitFrom = null;
+    var fm = R.getFovMax(); dv.setLimiter(R.panoLimiter(s.faceSize, Math.max(150 * Math.PI / 180, fm.v), Math.max(175 * Math.PI / 180, fm.h)));
+    // El destino se ve «e» veces (e ≤ 1) el tamaño final, creciendo desde (ax, ay), sin girar: la cámara apunta
+    // siempre a su dirección final; el encuadre se abre (k) y la capa se agranda (m) y se corre lo justo
+    // para que el punto de avance quede fijo y la capa cubra toda la pantalla.
+    function placeDest(e) {
+      if (e >= 0.999) { scaleLayers(dest, 1); dv.setParameters({ yaw: yawTo, pitch: pitchTo, fov: target }); return; }
+      var m = 1, rx = 0, ry = 0;
+      for (; m < 2.6; m += 0.02) {
+        rx = ax * (1 - e) - 0.5 * (m - e); ry = ay * (1 - e) - 0.5 * (m - e);
+        if (rx <= 0 && rx + m >= 1 && ry <= 0 && ry + m >= 1) break;
+      }
+      var k = e / m, f = 2 * Math.atan(Math.tan(target / 2) / k);
+      dv.setParameters({ yaw: yawTo, pitch: pitchTo, fov: f });
+      dest.listLayers().forEach(function (l) { l.mergeEffects({ rect: { relativeX: rx, relativeY: ry, relativeWidth: m, relativeHeight: m } }); });
+    }
+    function destOpacity(op) { dest.listLayers().forEach(function (l) { l.mergeEffects({ opacity: op }); }); dest.hotspotContainer().domElement().style.opacity = op; }
+    function cleanUp() { scaleLayers(from, 1); scaleLayers(dest, 1); dv.setLimiter(normalLimiter); }
+    function curve(u) { return u < 0.5 ? 2 * u * u : 1 - 2 * (1 - u) * (1 - u); }
+    // Tamaño del origen cuando la cámara está en s (avanzar hacia una pared lejana): 1 → G.
+    function grow(x) { return 1 / (1 - x * (1 - 1 / G)); }
     viewer.stopMovement();
     viewer.setIdleMovement(Infinity);
     layer.setScene(null, []);
     var slow = setTimeout(function () { if (my === loadSeq && !ready) setBar(0.08); }, 150);
-    preload(panoUrls(s).concat(linkedUrls(s)), function (p) { if (my === loadSeq && fadeAt === null) setBar(p); }).then(function () { ready = true; clearTimeout(slow); });
+    var loaded = false;
+    preload(panoUrls(s).concat(linkedUrls(s)), function (p) { if (my === loadSeq && !onStage) setBar(p); }).then(function () { loaded = true; clearTimeout(slow); });
     function frame(now) {
-      if (seq !== navSeq) { dv.setLimiter(normalLimiter); return; }   // el usuario eligió otra cosa
-      var e = Math.max(0, now - t0);                    // el primer cuadro puede traer una hora anterior a t0
-      // Acercamiento del origen: arranca con suavidad y avanza siempre (se va frenando sin parar).
-      var k = 1 - Math.exp(-Math.pow(e / 750, 1.5));
-      pv.setFov(Math.max(0.25, f0 * (1 - 0.45 * k)));
-      if (ready && !switched && e >= 220) {
-        switched = true;
+      if (seq !== navSeq) { cleanUp(); return; }     // el usuario eligió otra cosa
+      var dt = last === null ? 0 : Math.max(0, Math.min(50, now - last)); last = now;
+      // Listo = la base liviana del destino ya está en la tarjeta gráfica (o se esperó demasiado).
+      if (!ready && loaded && axes && levelReady(s.id)) ready = true;
+      if (!ready && now - t0 > 4000) ready = true;
+      var x = curve(Math.min(1, pt / D));
+      if (ready || x < 0.25) pt += dt;                  // sin destino listo, el avance espera en el 25 %
+      x = curve(Math.min(1, pt / D));
+      if (ready && !onStage) {
+        onStage = true;
+        if (axes && axes.length === 2 && !fixed) {
+          var t2 = refineTurn(axes[0], axes[1], turn);
+          if (t2 !== turn) { turn = t2; yawTo = wrapAngle(y0 + turn); target = normalLimiter({ yaw: yawTo, pitch: pitchTo, roll: 0, fov: R.effectiveFov(tour, s), width: pano.clientWidth, height: pano.clientHeight }).fov; }
+        }
+        finishTransition();
+        switching = {};
         dest.layer().setFixedLevel(displayLevel(s));
-        dest.view().setParameters(start);
-        switchWhenReady(dest, FADE, function (at) { if (seq === navSeq) { fadeAt = at; endBar(); } });
+        placeDest(grow(x) / G);
+        destOpacity(0);
+        dest.switchTo({ transitionDuration: 1e9, transitionUpdate: function () {} });
+        endBar();
       }
-      if (fadeAt !== null) {
-        var u = Math.min(1, (now - fadeAt) / (FADE + 350));
-        dest.view().setFov(start.fov + (target - start.fov) * easeOutCubic(u));
-        if (u >= 1) { dv.setFov(target); dv.setLimiter(normalLimiter); travelSeq = 0; applyLevel(dest, s); applyLevel(from, prev); holdWheel(); arrived(s, prev); return; }
+      var g = grow(x);
+      scaleLayers(from, g, ax, ay);
+      if (onStage) {
+        placeDest(g / G);
+        destOpacity(Math.max(0, Math.min(1, (x - 0.25) / 0.5)));
+      }
+      if (onStage && pt >= D) {
+        destOpacity(1);
+        finishTransition();
+        cleanUp(); dv.setParameters({ yaw: yawTo, pitch: pitchTo, fov: target });
+        travelSeq = 0; applyLevel(dest, s); applyLevel(from, prev); holdWheel(); arrived(s, prev);
+        return;
+      }
+      requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+  }
+
+  // ---------- Avance 3D real entre dos 360 (como 3DVista) ----------
+  // Marzipano no puede mover la cámara, solo girarla. Durante el salto se dibuja encima un lienzo propio:
+  // cada 360 es una esfera de radio 1 y la cámara AVANZA dentro de ella hacia el punto del salto, así la
+  // imagen se curva al acercarse (no es un zoom). El destino es otra esfera, centrada donde está el punto,
+  // y se mezcla entre el 25 % y el 75 % del avance. Al llegar, Marzipano sigue con la vista del destino.
+  var warp = null;                                       // false = no hay WebGL: se usa el salto de antes
+  var WARP_VS = 'attribute vec2 p; varying vec2 v; void main() { v = p; gl_Position = vec4(p, 0.0, 1.0); }';
+  var WARP_FS = [
+    'precision highp float;',
+    'varying vec2 v;',
+    'uniform vec3 uF, uR, uU, uCo, uCd;',
+    'uniform vec2 uT;',
+    'uniform mat3 uRt;',
+    'uniform float uMix;',
+    'uniform samplerCube uA, uB;',
+    // Punto donde el rayo que sale de c en la dirección d toca la esfera de radio 1 (c está dentro).
+    'vec3 hit(vec3 c, vec3 d) { float b = dot(c, d); return c + (-b + sqrt(max(b * b - dot(c, c) + 1.0, 0.0))) * d; }',
+    'void main() {',
+    '  vec3 d = normalize(uF + v.x * uT.x * uR + v.y * uT.y * uU);',
+    '  vec3 a = textureCube(uA, hit(uCo, d)).rgb;',
+    '  if (uMix > 0.0) a = mix(a, textureCube(uB, hit(uCd, uRt * d)).rgb, uMix);',
+    '  gl_FragColor = vec4(a, 1.0);',
+    '}'].join('\n');
+  function warpGL() {
+    if (warp !== null) return warp && !warp.lost ? warp : false;
+    warp = false;
+    try {
+      var c = document.createElement('canvas');
+      c.id = 'warp';
+      c.style.cssText = 'position:fixed;inset:0;width:100%;height:100%;pointer-events:none;display:none';
+      var o = { alpha: false, antialias: false, depth: false, stencil: false, premultipliedAlpha: false };
+      var gl = c.getContext('webgl2', o), gl2 = !!gl;
+      if (!gl) gl = c.getContext('webgl', o) || c.getContext('experimental-webgl', o);
+      if (!gl) return false;
+      var sh = function (type, src) {
+        var x = gl.createShader(type); gl.shaderSource(x, src); gl.compileShader(x);
+        if (!gl.getShaderParameter(x, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(x));
+        return x;
+      };
+      var pg = gl.createProgram();
+      gl.attachShader(pg, sh(gl.VERTEX_SHADER, WARP_VS)); gl.attachShader(pg, sh(gl.FRAGMENT_SHADER, WARP_FS));
+      gl.linkProgram(pg);
+      if (!gl.getProgramParameter(pg, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(pg));
+      gl.useProgram(pg);
+      gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+      var ap = gl.getAttribLocation(pg, 'p'); gl.enableVertexAttribArray(ap); gl.vertexAttribPointer(ap, 2, gl.FLOAT, false, 0, 0);
+      var u = {};
+      ['uF', 'uR', 'uU', 'uCo', 'uCd', 'uT', 'uRt', 'uMix', 'uA', 'uB'].forEach(function (n) { u[n] = gl.getUniformLocation(pg, n); });
+      gl.uniform1i(u.uA, 0); gl.uniform1i(u.uB, 1);
+      var pano = $('pano'); pano.parentNode.insertBefore(c, pano.nextSibling);
+      warp = { c: c, gl: gl, gl2: gl2, u: u, max: gl.getParameter(gl.MAX_CUBE_MAP_TEXTURE_SIZE) || 1024, lost: false, owner: 0 };
+      c.addEventListener('webglcontextlost', function (e) { e.preventDefault(); warp.lost = true; cubes = {}; cubeUse = []; c.style.display = 'none'; });
+    } catch (err) { warp = false; }
+    return warp;
+  }
+  function warpHide(seq) { if (warp && (seq == null || warp.owner === seq)) warp.c.style.display = 'none'; }
+  // Lo que se ve en una escena: la imagen de arriba (la variación elegida, si hay) o la propia.
+  function topScene(sc, s) { var ls = sc.listLayers(), l = ls[ls.length - 1]; return (l && l.__ps) || s; }
+  // ---- Las 6 caras de cada 360 en la tarjeta gráfica (cubemap) ----
+  // Orden de WebGL: +x −x +y −y +z −z = caras r l u d f b (las caras del tiler coinciden tal cual: FACES en tiler-worker).
+  var CUBE_FACES = ['r', 'l', 'u', 'd', 'f', 'b'];
+  var cubes = {}, cubeUse = [], CUBE_KEEP = PHONE ? 2 : 4;
+  // Nivel de las caras: el mismo nitidez que muestra Marzipano en esta pantalla, sin pasar de 2048 px (1024 en celular).
+  function cubeLevel(ps) {
+    var cap = Math.min(warp.max, PHONE ? 1024 : 2048), lo = baseLevel(ps), top = Math.max(lo, displayLevel(ps)), pick = lo;
+    ps.levels.forEach(function (lv, i) { if (!lv.fallbackOnly && i <= top && lv.size <= cap && lv.size > ps.levels[pick].size) pick = i; });
+    return pick;
+  }
+  function loadImg(url) {
+    return new Promise(function (resolve, reject) {
+      var im = new Image(); im.crossOrigin = 'anonymous';
+      im.onload = function () { resolve(im); }; im.onerror = reject; im.src = url;
+    });
+  }
+  function loadFaces(ps, z) {
+    var lv = ps.levels[z], n = Math.max(1, Math.round(lv.size / lv.tileSize)), dir = base + R.tileDir(ps) + '/' + z + '/';
+    return Promise.all(CUBE_FACES.map(function (f) {
+      var tiles = [];
+      for (var y = 0; y < n; y++) for (var x = 0; x < n; x++) (function (x, y) {
+        tiles.push(loadImg(dir + f + '/' + y + '/' + x + '.' + R.tileExt()).then(function (im) { return { im: im, x: x, y: y }; }));
+      })(x, y);
+      return Promise.all(tiles).then(function (list) {
+        if (n === 1) return list[0].im;
+        var c = document.createElement('canvas'); c.width = c.height = lv.size;
+        var g = c.getContext('2d');
+        list.forEach(function (t) { g.drawImage(t.im, t.x * lv.tileSize, t.y * lv.tileSize); });
+        return c;
+      });
+    }));
+  }
+  function putCube(key, faces, z) {
+    var gl = warp.gl, t = gl.createTexture(), old = cubes[key];
+    gl.bindTexture(gl.TEXTURE_CUBE_MAP, t);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+    for (var i = 0; i < 6; i++) gl.texImage2D(gl.TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, faces[i]);
+    gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    // Con WebGL2 se arman versiones reducidas: al alejarse (el destino entra desde atrás) no centellea.
+    if (warp.gl2) { gl.generateMipmap(gl.TEXTURE_CUBE_MAP); gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR); }
+    else gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    if (old && old.tex) gl.deleteTexture(old.tex);
+    return (cubes[key] = { tex: t, z: z });
+  }
+  // Promesa con el cubemap de lo que se ve en ps. Si las caras nítidas no llegan en 300 ms, la base liviana
+  // (ya precargada); las nítidas quedan guardadas para el próximo salto.
+  function cubeFor(ps) {
+    var key = R.tileDir(ps), want = cubeLevel(ps), lo = baseLevel(ps), c = cubes[key];
+    cubeUse = [key].concat(cubeUse.filter(function (k) { return k !== key; }));
+    while (cubeUse.length > CUBE_KEEP) { var k = cubeUse.pop(); if (cubes[k] && cubes[k].tex) warp.gl.deleteTexture(cubes[k].tex); delete cubes[k]; }
+    if (c && c.late && c.late.z > c.z) c = putCube(key, c.late.faces, c.late.z);
+    if (c && c.z >= want) return Promise.resolve(c);
+    return new Promise(function (resolve, reject) {
+      var done = false;
+      function use(faces, z) { if (!done) { done = true; resolve(putCube(key, faces, z)); } }
+      var hi = loadFaces(ps, want);
+      hi.then(function (f) { if (!done) use(f, want); else if (cubes[key]) cubes[key].late = { faces: f, z: want }; }, function () {});
+      setTimeout(function () {
+        if (done) return;
+        if (c) { done = true; resolve(c); return; }
+        (want === lo ? hi : loadFaces(ps, lo)).then(function (f) { use(f, lo); }, function (e) { if (!done) { done = true; reject(e); } });
+      }, 300);
+    });
+  }
+  // Cámara (yaw, pitch, fov de Marzipano: el pitch positivo mira abajo, el fov es vertical).
+  function warpDraw(cam, A, B, mixv, co, cd, T) {
+    // El tamaño se toma de #pano: el lienzo oculto mide 0 y el primer cuadro salía de 1 píxel (un destello).
+    var gl = warp.gl, c = warp.c, u = warp.u, dpr = Math.min(window.devicePixelRatio || 1, 2), pano = $('pano');
+    var w = Math.max(1, Math.round(pano.clientWidth * dpr)), hh = Math.max(1, Math.round(pano.clientHeight * dpr));
+    if (c.width !== w || c.height !== hh) { c.width = w; c.height = hh; }
+    gl.viewport(0, 0, w, hh);
+    var cy = Math.cos(cam.yaw), sy = Math.sin(cam.yaw), cp = Math.cos(cam.pitch), sp = Math.sin(cam.pitch);
+    var F = [sy * cp, -sp, cy * cp], Rv = [cy, 0, -sy];
+    var U = [F[1] * Rv[2] - F[2] * Rv[1], F[2] * Rv[0] - F[0] * Rv[2], F[0] * Rv[1] - F[1] * Rv[0]];
+    gl.uniform3fv(u.uF, F); gl.uniform3fv(u.uR, Rv); gl.uniform3fv(u.uU, U);
+    var th = Math.tan(cam.fov / 2);
+    gl.uniform2f(u.uT, th * w / hh, th);
+    gl.uniform3fv(u.uCo, co); gl.uniform3fv(u.uCd, cd);
+    var ct = Math.cos(T), st = Math.sin(T);
+    gl.uniformMatrix3fv(u.uRt, false, [ct, 0, -st, 0, 1, 0, st, 0, ct]);   // giro en Y: el yaw ψ del origen es ψ + T en el destino
+    gl.uniform1f(u.uMix, B ? mixv : 0);
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_CUBE_MAP, A.tex);
+    gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_CUBE_MAP, (B || A).tex);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  }
+  // Giro en Y por T (el mismo de uRt).
+  function rotY(T, v) { var c = Math.cos(T), s = Math.sin(T); return [c * v[0] + s * v[2], v[1], -s * v[0] + c * v[2]]; }
+  function travel3D(s, h, prev) {
+    var seq = ++navSeq, my = ++loadSeq;
+    travelSeq = seq;
+    var from = scenes[current], pv = from.view();
+    keepResident([prev.id]);
+    var cam = { yaw: pv.yaw(), pitch: pv.pitch(), fov: pv.fov() };   // la cámara no gira ni cambia de encuadre
+    var dest = getScene(s.id), dv = dest.view();
+    pinBase(s.id, dest.layer(), s);
+    syncLinked(s);
+    // Giro entre los dos 360: el de los puntos de ida y vuelta, afinado con los pisos (ver refineTurn).
+    var back = (s.hotspots || []).find(function (x) { return x.type === 'link' && x.target === prev.id; });
+    var turn = back && h.yaw != null && back.yaw != null ? back.yaw + Math.PI - h.yaw : 0;
+    var axes = null;
+    Promise.all([roomAxis(prev), roomAxis(s)]).then(function (r) { axes = r; });
+    // Hacia dónde y cuánto se avanza: la dirección del salto en horizontal; la distancia, como 3DVista,
+    // según qué tan lejos está el aro en el suelo (radio de la esfera = 1); si no está en el suelo, 0,75.
+    var hy = h.yaw != null ? h.yaw : cam.yaw, dir = [Math.sin(hy), 0, Math.cos(hy)];
+    var L = R.onFloor(h.style) && h.pitch > 0.05 ? Math.min(0.99, 1 / Math.tan(h.pitch)) : 0.75;
+    // 3DVista avanza en ≈ 750 ms; la duración de General (0,9 s por defecto) lo ajusta en proporción.
+    var DUR = Math.max(350, Math.round(750 * (tour.settings.transition != null ? tour.settings.transition : 900) / 900));
+    var A = null, B = null, failed = false;
+    cubeFor(topScene(from, prev)).then(function (c) { A = c; }, function () { failed = true; });
+    cubeFor(topScene(dest, s)).then(function (c) { B = c; }, function () { failed = true; });
+    viewer.stopMovement();
+    viewer.setIdleMovement(Infinity);
+    layer.setScene(null, []);
+    var slow = setTimeout(function () { if (my === loadSeq && !ready) setBar(0.08); }, 150);
+    var loaded = false;
+    preload(panoUrls(s).concat(linkedUrls(s)), function (p) { if (my === loadSeq && !ready) setBar(p); }).then(function () { loaded = true; clearTimeout(slow); });
+    var started = false, ready = false, shown = false, pt = 0, last = null, t0 = performance.now();
+    function curve(u) { return u < 0.5 ? 2 * u * u : 1 - 2 * (1 - u) * (1 - u); }   // acelera la mitad y frena la otra
+    function frame(now) {
+      if (seq !== navSeq) { warpHide(seq); return; }     // el usuario eligió otra cosa
+      if (failed || (!A && now - t0 > 4000) || (!B && now - t0 > 4000)) {   // no se pudieron leer las caras
+        warpHide(seq); travelSeq = 0; clearTimeout(slow);
+        travelFlat(s, h, prev);
+        return;
+      }
+      var dt = last === null ? 0 : Math.max(0, Math.min(50, now - last)); last = now;
+      if (!A) { requestAnimationFrame(frame); return; }  // hasta tener el origen se sigue viendo Marzipano
+      if (!started && (B || now - t0 > 350)) started = true;
+      if (!ready && B && ((loaded && axes && levelReady(s.id)) || now - t0 > 4000)) {
+        ready = true;
+        if (axes && axes.length === 2) turn = refineTurn(axes[0], axes[1], turn);
+        endBar();
+      }
+      var x = curve(Math.min(1, pt / DUR));
+      if (started && (ready || x < 0.25)) pt += dt;      // sin destino listo, el avance espera en el 25 %
+      x = curve(Math.min(1, pt / DUR));
+      var m = ready ? Math.max(0, Math.min(1, (x - 0.25) / 0.5)) : 0;
+      var co = [dir[0] * x * L, 0, dir[2] * x * L];
+      var cd = rotY(turn, [dir[0] * (x - 1) * L, 0, dir[2] * (x - 1) * L]);
+      warpDraw(cam, A, B, m, co, cd, turn);
+      if (!shown) { shown = true; warp.owner = seq; warp.c.style.display = 'block'; }
+      if (ready && pt >= DUR) {
+        // Llegada: Marzipano en el destino mirando a la misma dirección del mundo, con el mismo encuadre.
+        var pano = $('pano'), lim = dv.limiter();
+        var par = { yaw: wrapAngle(cam.yaw + turn), pitch: cam.pitch, roll: 0, fov: cam.fov, width: pano.clientWidth, height: pano.clientHeight };
+        if (lim) par = lim(par);
+        dv.setParameters({ yaw: par.yaw, pitch: par.pitch, fov: par.fov });
+        finishTransition();
+        switching = {};
+        dest.listLayers().forEach(function (l) { l.mergeEffects({ opacity: 1, rect: null }); });
+        dest.hotspotContainer().domElement().style.opacity = 1;
+        dest.layer().setFixedLevel(displayLevel(s));
+        dest.switchTo({ transitionDuration: 0 });
+        travelSeq = 0; applyLevel(dest, s); applyLevel(from, prev); holdWheel(); arrived(s, prev);
+        // Dos cuadros después (Marzipano ya dibujó el destino) se quita el lienzo.
+        requestAnimationFrame(function () { requestAnimationFrame(function () { warpHide(seq); }); });
+        return;
       }
       requestAnimationFrame(frame);
     }
@@ -637,6 +1004,7 @@
 
   function nodeLabel(n) {
     if (n.type === 'folder' || n.type === 'link') return n.name;
+    if (n.type === 'places') return window.RPlaces && window.RPlaces.has(tour.places) ? (n.name || 'Ubicación') : null;
     var ref = n.type === 'plan' ? byId(tour.plans, n.ref) : sceneData(n.ref);
     return ref ? (n.type === 'plan' ? ref.name : R.sceneTitle(ref)) : null;
   }
@@ -662,10 +1030,11 @@
       }).join('') + '</ul>';
     } else {
       var cur = currentList();
-      var th = R.theme(tour), back = menuStack.length ? '<button class="back back-' + (th.backPos === 'bottom' ? 'bottom' : 'top') + '" data-back="1">' + ICONS.back + 'Volver</button>' : '';
+      var th = R.theme(tour), back = menuStack.length ? '<button class="back back-' + (th.backPos === 'bottom' ? 'bottom' : 'top') + ' back-s-' + esc(th.backStyle || 'texto') + ' back-c-' + esc(th.backCase || 'menu') + '" data-back="1">' + ICONS.back + 'Volver</button>' : '';
       if (back && th.backPos !== 'bottom') html += back;
-      if (menuStack.length) html += '<p class="menu-title">' + esc(cur.title) + '</p>';
-      html += '<ul>' + visibleChildren(cur.list).map(function (n) {
+      if (menuStack.length) html += '<p class="menu-title mt-s-' + esc(th.titleStyle || 'texto') + '">' + esc(cur.title) + '</p>';
+      var noLines = th.menuLines === 'ninguna' || (th.menuLines === 'sub' && menuStack.length);
+      html += '<ul' + (noLines ? ' class="no-lines"' : '') + '>' + visibleChildren(cur.list).map(function (n) {
         var label = esc(nodeLabel(n)), cls = '', extra = '';
         if (n.type === 'folder') { if (R.folderContainsScene(n, current)) cls = 'active'; extra = ARROW_IN; }
         if (n.type === 'scene' && n.ref === current) cls = 'active';
@@ -695,6 +1064,19 @@
     if (n.type === 'scene') goTo(n.ref);
     else if (n.type === 'plan') openPlan(n.ref);
     else if (n.type === 'link') openLink(n);
+    else if (n.type === 'places') openPlaces(n);
+  }
+
+  // Ubicación: lugares de interés alrededor del proyecto (guardados en tour.places), siempre a pantalla completa.
+  function openPlaces(n) {
+    var P = window.RPlaces;
+    if (!P || !P.has(tour.places)) return;
+    P.loadCss();
+    var scr = null;
+    openModal(n.name || 'Ubicación', '<div class="rpl-host"></div>', function () { if (scr) scr.destroy(); }, { maximizable: true, slim: true });
+    $('modal').classList.add('max'); setMaxIcon();
+    var th = R.theme(tour);
+    scr = P.screen($('modalBody').querySelector('.rpl-host'), tour.places, { name: th.brand != null && th.brand ? th.brand : tour.title, accent: th.accent, address: tour.location && tour.location.address });
   }
 
   // Enlaces web (lugares de interés, etc.): ventana dentro del recorrido o pestaña nueva.
@@ -902,12 +1284,15 @@
     st.setProperty('--font', R.fontStack(t.font));
     st.setProperty('--accent', t.accent);
     st.setProperty('--panel', R.rgba(t.panelBg, t.panelOpacity));
+    var pb = t.panelBlur != null ? +t.panelBlur || 0 : 10;     // 0 = sin desenfoque
+    st.setProperty('--panel-blur', pb > 0 ? 'blur(' + pb + 'px)' : 'none');
     st.setProperty('--panel-solid', t.panelBg);
     st.setProperty('--text', t.textColor);
     st.setProperty('--muted', R.rgba(t.textColor, 0.62));
     st.setProperty('--line', R.rgba(t.textColor, 0.16));
     st.setProperty('--panel-w-user', t.panelWidth + 'px');
     st.setProperty('--menu-size', t.menuSize + 'px');
+    st.setProperty('--menu-pad', (t.menuGap != null ? +t.menuGap || 0 : 10) + 'px');
     st.setProperty('--menu-case', t.uppercase ? 'uppercase' : 'none');
     st.setProperty('--btn-bg', t.buttonBg);
     st.setProperty('--btn-fg', t.buttonColor);
@@ -917,11 +1302,22 @@
     st.setProperty('--hs-accent', t.hotspotHover || t.accent);
     st.setProperty('--hs-color', t.hotspotColor || '#ffffff');
     st.setProperty('--menu-hover', R.rgba(t.menuHover || '#ffffff', t.menuHoverOpacity != null ? t.menuHoverOpacity : 0.08));
-    st.setProperty('--toggle-bg', t.toggleBg || '#111111');
+    var tOp = t.toggleBgOpacity != null ? +t.toggleBgOpacity : 1;
+    st.setProperty('--toggle-bg', R.rgba(t.toggleBg || '#111111', tOp));
+    st.setProperty('--toggle-x', (+t.toggleX || 0) + 'px');
+    st.setProperty('--toggle-s', String((+t.toggleSize || 100) / 100));
+    st.setProperty('--toggle-y', (+t.toggleY || 0) + 'px');
+    document.body.classList.toggle('toggle-flecha', t.toggleIcon === 'flecha');
+    document.body.classList.toggle('toggle-clear', tOp <= 0);
     st.setProperty('--toggle-fg', t.toggleColor || '#ffffff');
     st.setProperty('--back-x', (t.backX || 0) + 'px');
     st.setProperty('--menu-active-bg', R.rgba(t.menuActiveBg || '#ffffff', t.menuActiveBgOpacity || 0));
     st.setProperty('--back-y', (t.backY || 0) + 'px');
+    st.setProperty('--back-c', t.backColor || t.accent);
+    if (t.titleColor) st.setProperty('--title-c', t.titleColor); else st.removeProperty('--title-c');
+    st.setProperty('--title-line', t.titleLine || t.accent);
+    st.setProperty('--title-line-bg', R.rgba(t.titleLine || t.accent, 0.16));
+    if (t.titleSize) st.setProperty('--title-size', t.titleSize + 'px'); else st.removeProperty('--title-size');
     st.setProperty('--logo-y', (t.logoY || 0) + 'px');
     document.body.classList.toggle('panel-right', t.side === 'right');
     document.body.classList.toggle('hide-scene-name', t.showSceneName === false);
@@ -941,6 +1337,8 @@
     tour = e.data.tour;
     tour.settings = tour.settings || {};
     R.normalizeMenu(tour);
+    R.setFovLimits(tour);
+    Object.keys(scenes).forEach(function (id) { var sd = sceneData(id); if (sd && !traveling()) scenes[id].view().setLimiter(R.sceneLimiter(sd.faceSize)); });
     applyTheme();
     renderTools();
     renderMenu();
@@ -969,6 +1367,8 @@
     tour = t;
     tour.settings = tour.settings || {};
     R.normalizeMenu(tour);
+    R.setFovLimits(tour);
+    R.setTileExt(tour.exported && tour.exported.tiles);
     if (!tour.scenes || !tour.scenes.length) return fail('Este recorrido todavía no tiene escenas.');
     document.title = tour.title || 'Recorrido virtual';
     var brandHtml = applyTheme();
@@ -992,9 +1392,8 @@
     var urls = withCover ? (cp ? panoUrls(cp) : [base + tour.cover.image]) : (first || sceneData(startId())).kind === 'image'
       ? [base + (first || sceneData(startId())).image] : panoUrls(first || sceneData(startId()));
     if (tour.logo) urls.push(base + tour.logo);
-    // Todos los 360 a la caché antes de entrar, cada uno con su nivel para esta pantalla. Las imágenes
-    // fijas, que pesan mucho más, bajan después en segundo plano. Si tarda demasiado se entra igual.
-    tour.scenes.forEach(function (s) { if (s.kind !== 'image') urls = urls.concat(panoUrls(s)); });
+    // Antes de entrar solo se espera la base liviana de la primera vista (unos cientos de KB).
+    // Ya dentro, en segundo plano: la base de todas las vistas, luego su versión nítida y lo demás.
     urls = urls.filter(function (u, i) { return urls.indexOf(u) === i; });
     var LOADER_MAX = 25000, entered = false, all = preload(urls, function (p) {
       $('loaderBar').style.width = Math.round(p * 100) + '%';
@@ -1003,12 +1402,22 @@
     // En segundo plano, después: las imágenes fijas y, en ordenador, más detalle para cuando el
     // cliente se acerque.
     all.then(function () {
+      var bases = [], sharp = [], more = [];
+      tour.scenes.forEach(function (s) { if (s.kind !== 'image') { bases = bases.concat(panoUrls(s)); sharp = sharp.concat(fullUrls(s)); } });
+      // Primero que termine de afinarse la vista que se está mirando; después, todo lo demás.
+      return new Promise(function (r) { (function wait() { var sc = scenes[current]; if (loaderGone && (!sc || sharpReady(current))) setTimeout(r, 400); else setTimeout(wait, 100); })(); setTimeout(r, 6000); })
+        .then(function () { return preload(bases, null, true); }).then(function () {
+          // Orientación de cada cuarto (para los saltos), ya con las bases en la caché.
+          tour.scenes.forEach(function (sc) { if (sc.kind !== 'image') roomAxis(sc); });
+          return preload(sharp, null, true);
+        });
+    }).then(function () {
       var more = [];
       tour.scenes.forEach(function (s) { if (s.kind === 'image') more.push(base + s.image); });
       if (!PHONE) tour.scenes.forEach(function (s) { if (s.kind !== 'image') for (var z = displayLevel(s) + 1; z < s.levels.length; z++) more = more.concat(levelUrls(s, z)); });
       // Las otras imágenes de los puntos de variación, por si el cliente las pide.
       tour.scenes.forEach(function (s) { var vh = s.kind !== 'image' && R.variantOf(s); if (vh) vh.options.forEach(function (o) { if (!o.base) more = more.concat(panoUrls(R.optionScene(s, o))); }); });
-      preload(more);
+      preload(more, null, true);
     });
     Promise.race([all, new Promise(function (r) { setTimeout(r, LOADER_MAX); })]).then(function () {
       if (entered) return;

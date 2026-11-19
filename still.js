@@ -17,6 +17,7 @@
   // Nodo: { id, type: 'folder', name, children: [...] }
   //       { id, type: 'scene' | 'plan', ref }
   //       { id, type: 'link', name, url, mode: 'popup' | 'tab' }
+  //       { id, type: 'places', name }   (pantalla Ubicación; sus datos van en tour.places)
   function nid() { return 'n' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
   R.newNodeId = nid;
   // Convierte menús de versiones anteriores (categorías con items) al formato en árbol.
@@ -30,6 +31,7 @@
       }
       if (node.type === 'scene' || node.type === 'plan') return { id: node.id, type: node.type, ref: node.ref };
       if (node.type === 'link') return { id: node.id, type: 'link', name: node.name || 'Enlace', url: node.url || '', mode: node.mode === 'tab' ? 'tab' : 'popup' };
+      if (node.type === 'places') return { id: node.id, type: 'places', name: node.name || 'Ubicación' };   // pantalla Ubicación (datos en tour.places)
       return null;
     }
     tour.menu = (tour.menu || []).map(fix).filter(Boolean);

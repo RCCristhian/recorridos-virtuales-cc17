@@ -1,0 +1,103 @@
+/* Ray-B View — pantalla «Ubicación» (lugares de interés). Traída de Ray-B View Total con los colores del recorrido. */
+.rpl { --rp-bg: var(--panel-solid, #1c1d1a); --rp-ink: var(--text, #f0eee8); --rp-muted: var(--muted, rgba(240,238,232,.62)); --rp-line: var(--line, rgba(255,255,255,.16)); --rp-accent: var(--accent, #b5122c); --rp-font: var(--font, "Segoe UI", system-ui, sans-serif);
+  display: grid; grid-template-columns: minmax(280px, 360px) 1fr; height: min(78vh, 760px); min-height: 0; background: var(--rp-bg); color: var(--rp-ink); font-family: var(--rp-font); }
+#modal.max .rpl { height: auto; flex: 1; }
+.rpl-host { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+#modal .modal-body:has(.rpl-host) { overflow: hidden; }
+.rpl-side { padding: 26px 24px 24px max(24px, env(safe-area-inset-left,0px)); display: flex; flex-direction: column; gap: 16px; border-right: 1px solid var(--rp-line); overflow-y: auto; min-width: 0; min-height: 0; }
+.rpl-kick { font-size: 10.5px; letter-spacing: .22em; text-transform: uppercase; color: var(--rp-muted); }
+.rpl-title { margin: 0; font-size: 30px; font-weight: 600; line-height: 1.1; letter-spacing: .02em; overflow-wrap: anywhere; }
+.rpl-title small { display: block; margin-top: 8px; font-size: 13px; font-weight: 400; letter-spacing: 0; color: var(--rp-muted); }
+.rpl-cats { display: grid; gap: 2px; }
+.rpl-cats button { display: grid; grid-template-columns: 10px 1fr auto; gap: 12px; align-items: center; padding: 10px 6px; border: 0; border-bottom: 1px solid var(--rp-line); background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; transition: background .2s; border-radius: 4px; }
+.rpl-cats button i { width: 10px; height: 10px; border-radius: 50%; display: block; }
+.rpl-cats button span { font-size: 14px; }
+.rpl-cats button small { display: block; color: var(--rp-muted); font-size: 11.5px; margin-top: 2px; }
+.rpl-cats button b { font-size: 22px; font-weight: 600; }
+.rpl-cats button:hover, .rpl-cats button.on { background: color-mix(in srgb, var(--rp-accent) 14%, transparent); }
+.rpl-cats button.on b { color: var(--rp-accent); }
+.rpl-list { display: grid; gap: 0; }
+.rpl-list > .rpl-kick { margin: 8px 0 4px; }
+.rpl-list [data-pi] { display: flex; justify-content: space-between; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--rp-line); font-size: 13px; cursor: pointer; }
+.rpl-list [data-pi] small { color: var(--rp-muted); white-space: nowrap; }
+.rpl-list [data-pi]:hover span { color: var(--rp-accent); }
+.rpl-muted { color: var(--rp-muted); font-size: 13px; margin: 0; }
+.rpl-map { position: relative; isolation: isolate; z-index: 0; min-width: 0; min-height: 0; display: grid; place-items: center; overflow: hidden; background: var(--rp-bg); }
+.rpl-map > svg { width: 100%; height: 100%; padding: 30px; box-sizing: border-box; }
+.rpl-tip { position: absolute; transform: translate(-50%, -100%); padding: 6px 10px; background: var(--rp-bg); border: 1px solid var(--rp-line); pointer-events: none; white-space: nowrap; font-size: 12px; border-radius: 6px; }
+/* En el recorrido la X de cerrar está arriba a la derecha: los botones del mapa van debajo. */
+#modal .rvl-zoom { top: 58px; right: 16px; }
+#modal .rvl-walk { right: 16px; }
+
+.rvp-road { fill: none; stroke: color-mix(in srgb, var(--rp-ink) 22%, transparent); stroke-linecap: round; stroke-linejoin: round; }
+.rvp-road.r1 { stroke: color-mix(in srgb, var(--rp-ink) 34%, transparent); }
+.rvp-road.r4 { stroke: color-mix(in srgb, var(--rp-ink) 12%, transparent); }
+.rvp-park { fill: color-mix(in srgb, #6fcf97 16%, transparent); stroke: none; }
+.rvp-water { fill: color-mix(in srgb, #5b8fd6 22%, transparent); }
+.rvp-coast { fill: none; stroke: color-mix(in srgb, #5b8fd6 55%, transparent); stroke-linecap: round; }
+.rvp-ring { fill: none; stroke: color-mix(in srgb, var(--rp-accent) 45%, transparent); }
+.rvp-rlab { fill: var(--rp-accent); font-family: var(--rp-font); letter-spacing: .15em; opacity: .8; }
+.rvp-poi circle { stroke: var(--rp-bg); transition: r .3s; }
+.rvp-poi { transition: opacity .3s; cursor: default; }
+.rvp-poi.dim { opacity: .18; }
+.rvp-poi.act circle, .rvp-poi.hl circle { animation: rvpPop 1.8s ease-in-out infinite; }
+.rvp-poi text { fill: var(--rp-ink); text-anchor: middle; font-family: var(--rp-font); paint-order: stroke; stroke: var(--rp-bg); pointer-events: none; }
+@keyframes rvpPop { 50% { opacity: .65; } }
+.rvp-me circle { fill: var(--rp-accent); stroke: var(--rp-bg); }
+.rvp-me .rvp-pulse { fill: var(--rp-accent); stroke: none; opacity: .25; transform-box: fill-box; transform-origin: center; animation: rvpPulse 2.2s ease-out infinite; }
+@keyframes rvpPulse { 0% { transform: scale(.4); opacity: .55; } 100% { transform: scale(2.2); opacity: 0; } }
+.rvp-me text { fill: var(--rp-ink); text-anchor: middle; font-family: var(--rp-font); letter-spacing: .2em; text-transform: uppercase; paint-order: stroke; stroke: var(--rp-bg); }
+.rpl-lmap { position: absolute; inset: 0; background: #f2f2f0; }
+.rpl-lmap[hidden] { display: none; }
+.rpl-lmap .rvl-map { position: absolute; inset: 0; background: #f2f2f0; font-family: Inter, "Segoe UI", system-ui, sans-serif; }
+.rpl-lmap .leaflet-tile-pane { transition: filter .3s ease; }
+.rpl-lmap.base-minimal .leaflet-tile-pane { filter: grayscale(100%) brightness(108%) contrast(86%); }
+.rpl-lmap .leaflet-control-attribution { background: rgba(255,255,255,.8); color: #777; font-size: 10px; }
+.rpl-lmap .leaflet-control-attribution a { color: #777; }
+/* Controles con el diseño del showroom */
+.rvl-zoom { position: absolute; right: max(24px, env(safe-area-inset-right,0px)); top: calc(24px + env(safe-area-inset-top,0px)); z-index: 500; display: grid; gap: 8px; }
+.rvl-zoom button { width: 44px; height: 44px; display: grid; place-items: center; border: 1px solid var(--rp-line); background: color-mix(in srgb, var(--rp-bg) 92%, transparent); color: var(--rp-ink); font-size: 20px; line-height: 1; border-radius: 10px; box-shadow: 0 4px 14px rgba(0,0,0,.18); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
+.rvl-zoom button:hover { border-color: var(--rp-accent); color: var(--rp-accent); }
+.rvl-bases { position: absolute; left: 50%; transform: translateX(-50%); bottom: calc(22px + env(safe-area-inset-bottom,0px)); z-index: 500; display: flex; gap: 2px; padding: 4px; border: 1px solid var(--rp-line); background: color-mix(in srgb, var(--rp-bg) 92%, transparent); border-radius: 999px; box-shadow: 0 6px 20px rgba(0,0,0,.2); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
+.rvl-bases button { border: 0; background: none; padding: 8px 18px; font-family: var(--rp-font); font-size: 10.5px; letter-spacing: .2em; text-transform: uppercase; color: var(--rp-muted); border-radius: 999px; }
+.rvl-bases button.on { background: var(--rp-accent); color: var(--rp-bg); }
+.rvl-walk { position: absolute; right: max(24px, env(safe-area-inset-right,0px)); bottom: calc(34px + env(safe-area-inset-bottom,0px)); z-index: 500; display: grid; gap: 4px; padding: 10px 14px; border: 1px solid var(--rp-line); background: color-mix(in srgb, var(--rp-bg) 92%, transparent); border-radius: 10px; font-size: 11.5px; color: var(--rp-muted); }
+.rvl-walk b { font-family: var(--rp-font); font-weight: 400; font-size: 10px; letter-spacing: .2em; text-transform: uppercase; color: var(--rp-ink); }
+.rvl-walk span { display: flex; gap: 6px; align-items: center; }
+.rvl-walk i { width: 16px; height: 0; border-top: 2px dashed; display: block; }
+.rvl-walk i.a { border-color: #c5a059; } .rvl-walk i.b { border-color: #999; }
+/* Marcadores, etiquetas y ventanitas (blancos) */
+.rvl-me { background: none !important; border: 0 !important; }
+.rvl-me .rvl-pulse { position: absolute; inset: 0; border-radius: 50%; background: rgba(17,17,17,.2); animation: rvlRing 2.2s cubic-bezier(.215,.61,.355,1) infinite; }
+.rvl-me .rvl-core { position: absolute; left: 10px; top: 10px; width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; background: #111; color: #fff; border: 3px solid #fff; font-size: 13px; font-weight: 700; box-shadow: 0 4px 16px rgba(0,0,0,.35); box-sizing: border-box; }
+.rvl-me .rvl-pill { position: absolute; left: 50%; bottom: 46px; transform: translateX(-50%); background: #111; color: #fff; padding: 5px 12px; border-radius: 14px; font-size: 11px; font-weight: 600; letter-spacing: .8px; text-transform: uppercase; white-space: nowrap; box-shadow: 0 4px 14px rgba(0,0,0,.25); border: 1px solid rgba(255,255,255,.2); }
+.rvl-me .rvl-pill::after { content: ""; position: absolute; left: 50%; bottom: -5px; transform: translateX(-50%); border: 5px solid transparent; border-bottom: 0; border-top-color: #111; }
+@keyframes rvlRing { 0% { transform: scale(.4); opacity: .9; } 100% { transform: scale(1.6); opacity: 0; } }
+.rvl-poi { background: none !important; border: 0 !important; }
+.rvl-pw { display: flex; flex-direction: column; align-items: center; cursor: pointer; transition: transform .2s; }
+.rvl-pw:hover { transform: translateY(-4px) scale(1.08); }
+.rvl-ic { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; background: color-mix(in srgb, var(--c) 12%, #fff); border: 2px solid var(--c); box-shadow: 0 3px 10px rgba(0,0,0,.15); }
+.rvl-pw.cat-parques { --c: #2e7d32 !important; } .rvl-pw.cat-colegios { --c: #1565c0 !important; } .rvl-pw.cat-salud { --c: #c62828 !important; } .rvl-pw.cat-super { --c: #e65100 !important; } .rvl-pw.cat-comida { --c: #4e342e !important; }
+.rvl-pw.cat-universidades { --c: #6a1b9a !important; } .rvl-pw.cat-bancos { --c: #00695c !important; } .rvl-pw.cat-deporte { --c: #ad1457 !important; } .rvl-pw.cat-transporte { --c: #455a64 !important; }
+.rvl-pw.glow .rvl-ic { animation: rvlGlow 1.8s infinite alternate; }
+@keyframes rvlGlow { 0% { box-shadow: 0 0 4px rgba(46,125,50,.4); } 100% { box-shadow: 0 0 16px rgba(46,125,50,.9); } }
+.rvl-lb { margin-top: 4px; max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 3px 8px; border-radius: 10px; font-size: 11px; font-weight: 500; letter-spacing: -.2px; background: rgba(255,255,255,.96); color: #111; border: 1px solid rgba(0,0,0,.08); box-shadow: 0 2px 8px rgba(0,0,0,.1); pointer-events: none; }
+.rpl-lmap .leaflet-popup-content-wrapper { border-radius: 12px; box-shadow: 0 8px 26px rgba(0,0,0,.18); }
+.rvl-card { display: flex; flex-direction: column; gap: 8px; min-width: 200px; color: #111; font-family: Inter, "Segoe UI", system-ui, sans-serif; }
+.rvl-card span { font-size: 10px; font-weight: 600; letter-spacing: 1px; text-transform: uppercase; color: #999; }
+.rvl-card h4 { margin: 0; font-size: 15px; font-weight: 600; line-height: 1.25; }
+.rvl-walkinfo { font-size: 12px; color: #555; background: #f7f7f7; padding: 6px 10px; border-radius: 6px; }
+.rvl-walkinfo b { color: #111; }
+.rvl-go { display: block; text-align: center; padding: 8px 12px; border-radius: 8px; background: #111; color: #fff !important; font-size: 12px; font-weight: 600; text-decoration: none; }
+.rvl-go:hover { background: #333; }
+/* Celular (va al final para mandar sobre lo de arriba) */
+@media (max-width: 820px) {
+  .rpl { grid-template-columns: 1fr; grid-template-rows: 48% 1fr; height: 100%; }
+  .rpl-map { grid-row: 1; }
+  .rpl-side { grid-row: 2; border-right: 0; border-top: 1px solid var(--rp-line); padding: 16px max(16px, env(safe-area-inset-right,0px)) calc(16px + env(safe-area-inset-bottom,0px)) max(16px, env(safe-area-inset-left,0px)); gap: 12px; }
+  .rpl-title { font-size: 22px; }
+  #modal .rvl-zoom { top: calc(56px + var(--sat, 0px)); right: 12px; } #modal .rvl-zoom button { width: 38px; height: 38px; }
+  .rvl-walk { display: none; }
+  .rvl-bases { bottom: 12px; }
+  .rvl-bases button { padding: 7px 12px; }
+}
